@@ -1,0 +1,79 @@
+package me.alpha432.oyvey.mixin.render;
+
+import com.mojang.blaze3d.vertex.PoseStack;
+import me.alpha432.oyvey.OyVey;
+import me.alpha432.oyvey.features.cape.CapeEntry;
+import me.alpha432.oyvey.features.cape.CapeTextureLoader;
+import me.alpha432.oyvey.features.modules.render.Chams;
+import me.alpha432.oyvey.util.render.Layers;
+import net.minecraft.client.model.Model;
+import net.minecraft.client.renderer.SubmitNodeCollection;
+import net.minecraft.client.renderer.feature.ModelFeatureRenderer.CrumblingOverlay;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.resources.Identifier;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+@Mixin(SubmitNodeCollection.class)
+public class MixinSubmitNodeCollection {
+   private static boolean oyvey$replacing;
+
+   @Inject(
+      method = "submitModel(Lnet/minecraft/client/model/Model;Ljava/lang/Object;Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/rendertype/RenderType;IIILnet/minecraft/client/renderer/texture/TextureAtlasSprite;ILnet/minecraft/client/renderer/feature/ModelFeatureRenderer$CrumblingOverlay;)V",
+      at = @At("HEAD"),
+      cancellable = true
+   )
+   private void onSubmitModel(
+      Model model,
+      Object state,
+      PoseStack poseStack,
+      RenderType renderType,
+      int lightCoords,
+      int overlayCoords,
+      int tintedColor,
+      TextureAtlasSprite sprite,
+      int outlineColor,
+      CrumblingOverlay crumblingOverlay,
+      CallbackInfo ci
+   ) {
+      if (!oyvey$replacing) {
+         boolean isChams = Chams.renderingChamsEntity;
+         Identifier capeTexId = getCapeTexture();
+         if (isChams || capeTexId != null) {
+            oyvey$replacing = true;
+
+            try {
+               RenderType newType = renderType;
+               if (capeTexId != null) {
+                  newType = Layers.capeCustomTexture(renderType, capeTexId);
+               }
+
+               if (isChams) {
+                  newType = Layers.chamsDepthBias(newType);
+               }
+
+               ((SubmitNodeCollection)(Object)this)
+                  .submitModel(model, state, poseStack, newType, lightCoords, overlayCoords, tintedColor, sprite, outlineColor, crumblingOverlay);
+            } finally {
+               oyvey$replacing = false;
+            }
+
+            ci.cancel();
+         }
+      }
+   }
+
+   private static Identifier getCapeTexture() {
+      if (!Chams.renderingOwnCape) {
+         return null;
+      } else if (OyVey.capeManager != null && OyVey.capeManager.hasActiveCape()) {
+         CapeEntry active = OyVey.capeManager.getActiveCape();
+         return active != null ? CapeTextureLoader.get(active.source()) : null;
+      } else {
+         return null;
+      }
+   }
+}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "oyvey",
+  "version": "${version}",
+  "name": "SRClient 2.0",
+  "description": "free and opensource client base",
+  "authors": [
+    "3arthqu4ke",
+    "alpha432",
+    "cattyn"
+  ],
+  "contact": {
+    "repo": "https://github.com/mioclient/oyvey-ported"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "accessWidener": "oyvey.accesswidener",
+  "entrypoints": {
+    "client": [
+      "me.alpha432.oyvey.OyVey"
+    ],
+    "main": [
+      "me.alpha432.oyvey.OyVey"
+    ]
+  },
+  "mixins": [
+    "oyvey.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.2",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}

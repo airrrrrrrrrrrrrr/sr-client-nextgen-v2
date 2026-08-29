@@ -1,0 +1,75 @@
+plugins {
+    // Minecraft 26.1+ ships unobfuscated; this is Loom's no-remap plugin.
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // Recovered from the original fat JAR. This contains MinecraftAuth,
+    // LuaJ, Gson/JJWT, and their supporting classes.
+    implementation files('libs/bundled-dependencies.jar')
+}
+
+loom {
+    accessWidenerPath = file('src/main/resources/oyvey.accesswidener')
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'minecraft_version', project.minecraft_version
+
+    filesMatching('fabric.mod.json') {
+        expand(
+            version: project.version,
+            minecraft_version: project.minecraft_version
+        )
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
+    withSourcesJar()
+}
+
+jar {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from('LICENSE') {
+        rename { "${it}_${project.base.archivesName.get()}" }
+    }
+
+    // Restore the dependencies that were shaded into the supplied binary.
+    from(zipTree(file('libs/bundled-dependencies.jar'))) {
+        exclude 'META-INF/MANIFEST.MF'
+    }
+}
+
+publishing {
+    publications {
+        create('mavenJava', MavenPublication) {
+            artifactId = project.archives_base_name
+            from components.java
+        }
+    }
+}

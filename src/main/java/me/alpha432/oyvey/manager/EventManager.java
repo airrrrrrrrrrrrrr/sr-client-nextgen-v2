@@ -1,0 +1,101 @@
+package me.alpha432.oyvey.manager;
+
+import me.alpha432.oyvey.OyVey;
+import me.alpha432.oyvey.event.Stage;
+import me.alpha432.oyvey.event.impl.entity.DeathEvent;
+import me.alpha432.oyvey.event.impl.entity.player.TickEvent;
+import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
+import me.alpha432.oyvey.event.impl.input.KeyInputEvent;
+import me.alpha432.oyvey.event.impl.input.MouseInputEvent;
+import me.alpha432.oyvey.event.impl.network.ChatEvent;
+import me.alpha432.oyvey.event.impl.network.PacketEvent;
+import me.alpha432.oyvey.event.impl.render.Render2DEvent;
+import me.alpha432.oyvey.event.impl.render.Render3DEvent;
+import me.alpha432.oyvey.event.system.Subscribe;
+import me.alpha432.oyvey.features.Feature;
+import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
+import net.minecraft.network.protocol.common.custom.BrandPayload;
+import net.minecraft.network.protocol.game.ClientboundSetTimePacket;
+import net.minecraft.world.entity.player.Player;
+
+public class EventManager extends Feature {
+   public void init() {
+      EVENT_BUS.register(this);
+   }
+
+   public void onUnload() {
+      EVENT_BUS.unregister(this);
+   }
+
+   @Subscribe
+   public void onTick(TickEvent event) {
+      if (!nullCheck()) {
+         OyVey.moduleManager.onTick();
+
+         for (Player player : mc.level.players()) {
+            if (player != null && !(player.getHealth() > 0.0F)) {
+               EVENT_BUS.post(new DeathEvent(player));
+            }
+         }
+      }
+   }
+
+   @Subscribe
+   public void onUpdateWalkingPlayer(UpdateWalkingPlayerEvent event) {
+      if (!nullCheck()) {
+         if (event.getStage() == Stage.PRE) {
+            OyVey.speedManager.update();
+            OyVey.rotationManager.updateRotations();
+            OyVey.positionManager.updatePosition();
+         }
+
+         if (event.getStage() == Stage.POST) {
+            OyVey.rotationManager.restoreRotations();
+            OyVey.positionManager.restorePosition();
+         }
+      }
+   }
+
+   @Subscribe
+   public void onPacketReceive(PacketEvent.Receive event) {
+      OyVey.serverManager.onPacketReceived();
+      if (event.getPacket() instanceof ClientboundSetTimePacket) {
+         OyVey.serverManager.update();
+      }
+
+      if (event.getPacket() instanceof ClientboundCustomPayloadPacket payload && payload.payload() instanceof BrandPayload brand) {
+         OyVey.serverManager.setServerBrand(brand.brand());
+      }
+   }
+
+   @Subscribe
+   public void onWorldRender(Render3DEvent event) {
+      OyVey.moduleManager.onRender3D(event);
+   }
+
+   @Subscribe
+   public void onRenderGameOverlayEvent(Render2DEvent event) {
+      OyVey.moduleManager.onRender2D(event);
+   }
+
+   @Subscribe
+   public void onKeyInput(KeyInputEvent event) {
+      OyVey.moduleManager.onKeyPressed(event.getKey());
+   }
+
+   @Subscribe
+   public void onMouseInput(MouseInputEvent event) {
+      if (event.getAction() == 1) {
+         OyVey.moduleManager.onMouseClicked(event.getButton());
+      }
+   }
+
+   @Subscribe
+   public void onChatSent(ChatEvent event) {
+      String message = event.getMessage();
+      if (message.startsWith(OyVey.commandManager.getCommandPrefix())) {
+         event.cancel();
+         OyVey.commandManager.onChatSent(message);
+      }
+   }
+}

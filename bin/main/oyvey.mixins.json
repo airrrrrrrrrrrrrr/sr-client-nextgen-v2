@@ -1,0 +1,51 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "me.alpha432.oyvey.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "network.MixinConnection",
+    "world.MixinLevel",
+    "world.MixinLiquidBlock"
+  ],
+  "client": [
+    "entity.MixinClientPlayerEntity",
+    "entity.MixinLivingEntity",
+    "entity.MixinHitbox",
+    "entity.MixinEntity",
+    "entity.MixinLocalPlayer",
+    "entity.MixinMultiPlayerGameMode",
+    "entity.MixinFastUse",
+    "entity.MixinNoSlow",
+    "entity.MixinNoWeb",
+    "entity.MixinPlayer",
+    "input.MixinKeyboardHandler",
+    "input.MixinKeyboardInput",
+    "input.MixinMouseHandler",
+    "network.MixinClientPacketListener",
+    "render.MixinCapeLayer",
+    "render.MixinChatComponent",
+    "render.MixinDeltaTrackerTimer",
+    "render.MixinEntityRenderDispatcher",
+    "render.MixinItemInHandRenderer",
+    "render.MixinLevelRenderer",
+    "render.MixinSkyRenderer",
+    "render.MixinSubmitNodeCollection",
+    "render.MixinSubmitNodeStorage",
+    "render.accessor.EntityRenderDispatcherAccessor",
+    "render.accessor.ClientInputAccessor",
+    "render.accessor.MinecraftAccessor",
+    "render.accessor.RenderSetupAccessor",
+    "render.accessor.RenderTypeAccessor",
+    "render.accessor.TextureBindingAccessor",
+    "render.gui.MixinChatScreen",
+    "render.gui.MixinCommandSuggestions",
+    "render.gui.MixinGui",
+    "render.gui.MixinTitleScreen",
+    "render.gui.MixinDisconnectedScreen",
+    "render.gui.MixinJoinMultiplayerScreen"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

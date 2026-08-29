@@ -1,0 +1,19 @@
+accessWidener v2 official
+
+accessible field net/minecraft/client/Minecraft rightClickDelay I
+accessible field net/minecraft/world/entity/LivingEntity useItemRemaining I
+accessible method net/minecraft/client/multiplayer/MultiPlayerGameMode ensureHasSentCarriedItem ()V
+accessible field net/minecraft/client/renderer/RenderPipelines ENTITY_SNIPPET Lcom/mojang/blaze3d/pipeline/RenderPipeline$Snippet;
+accessible method net/minecraft/client/renderer/rendertype/RenderType create (Ljava/lang/String;Lnet/minecraft/client/renderer/rendertype/RenderSetup;)Lnet/minecraft/client/renderer/rendertype/RenderType;
+
+# Server-rotation rendering: the mixin temporarily writes render-yaw into
+# both the "current" and "previous-tick O" rotation fields so that MC's
+# rotLerp(partialTick, O, current) always resolves to renderYaw regardless
+# of where in the tick interval the frame lands.  Without the O fields the
+# model lerps back toward client rotation at low partial-tick values and the
+# effect is nearly invisible.  All six fields are widened here as a safety
+# net; in builds where they are already public these entries are no-ops.
+accessible field net/minecraft/world/entity/LivingEntity yBodyRot F
+accessible field net/minecraft/world/entity/LivingEntity yBodyRotO F
+accessible field net/minecraft/world/entity/LivingEntity yHeadRotO F
+accessible field net/minecraft/world/entity/Entity xRotO F
