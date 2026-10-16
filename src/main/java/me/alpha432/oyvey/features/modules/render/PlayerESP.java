@@ -35,7 +35,6 @@ import net.minecraft.world.phys.Vec3;
 public class PlayerESP extends Module {
    public final Setting<Boolean> modeBox = this.bool("Box", true);
    public final Setting<Boolean> modeCorner = this.bool("Corner", false);
-   public final Setting<Boolean> mode2D = this.bool("2D", false);
    public final Setting<Boolean> modeFilled = this.bool("Filled", false);
    public final Setting<Boolean> modeHealthbar = this.bool("Healthbar", false);
    public final Setting<Boolean> modeNametag = this.bool("Nametag", false);
@@ -127,10 +126,14 @@ public class PlayerESP extends Module {
    public void onRender2D(Render2DEvent event) {
       if (mc.player != null
          && mc.level != null
-         && (this.mode2D.getValue() || this.modeHealthbar.getValue() || this.modeNametag.getValue() || this.modePenis.getValue())) {
+         && (this.modeHealthbar.getValue() || this.modeNametag.getValue() || this.modePenis.getValue())) {
          GuiGraphicsExtractor gfx = event.getContext();
 
-         for (Entity entity : this.getTargets()) {
+         List<Entity> targets = this.getTargets();
+         for (Entity entity : targets) {
+            if (entity == mc.player || !entity.isAlive() || entity.isRemoved()) {
+               continue;
+            }
             if (entity instanceof LivingEntity le) {
                AABB box = RenderUtil.interpolatedBox(entity, event.getDelta());
                Color c = this.getColor(entity);
@@ -142,10 +145,6 @@ public class PlayerESP extends Module {
                   float y2 = r[3];
                   if (!(x1 >= x2) && !(y1 >= y2)) {
                      int ci = c.getRGB();
-                     if (this.mode2D.getValue()) {
-                        this.draw2DBox(gfx, x1, y1, x2, y2, ci);
-                     }
-
                      if (this.modeHealthbar.getValue()) {
                         this.drawHealthbar(gfx, le, x1, y1, x2, y2);
                      }
@@ -225,17 +224,6 @@ public class PlayerESP extends Module {
       float dist = mc.player.distanceTo(e);
       float scale = Mth.clamp(1.0F - dist / this.range.getValue().intValue(), 0.2F, 1.0F);
       return this.lineWidth.getValue() * scale;
-   }
-
-   private void draw2DBox(GuiGraphicsExtractor g, float x1, float y1, float x2, float y2, int c) {
-      int x1i = (int)x1;
-      int y1i = (int)y1;
-      int x2i = (int)x2;
-      int y2i = (int)y2;
-      g.fill(x1i, y1i, x2i, y1i + 1, c);
-      g.fill(x1i, y2i - 1, x2i, y2i, c);
-      g.fill(x1i, y1i, x1i + 1, y2i, c);
-      g.fill(x2i - 1, y1i, x2i, y2i, c);
    }
 
    private void drawCorners3D(PoseStack stack, AABB box, Color c, float lw) {

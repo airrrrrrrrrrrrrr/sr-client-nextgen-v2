@@ -4,8 +4,14 @@ import java.awt.Color;
 import java.awt.Desktop;
 import java.awt.Desktop.Action;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Random;
+import java.util.UUID;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.auth.MicrosoftAuth;
 import me.alpha432.oyvey.util.render.RenderUtil;
@@ -33,6 +39,7 @@ public class AccountManagerScreen extends Screen {
    private final float[] svy = new float[90];
    private final float[] sa = new float[90];
    private final AccountManagerScreen.SimpleField addField = new AccountManagerScreen.SimpleField();
+   private boolean tokenMode = false;
    private volatile String statusMsg = "";
    private volatile boolean statusOk = false;
    private int scrollOffset = 0;
@@ -199,16 +206,18 @@ public class AccountManagerScreen extends Screen {
 
       int fy = cy + headerH + listH + 8;
       int addBtnW = 32;
-      int fw = lw - addBtnW - 4;
-      if (mx >= lx && mx < lx + fw && my >= fy && my < fy + 18) {
-         boolean var60 = true;
-      } else {
-         boolean var59 = false;
-      }
-
-      boolean btnHov = mx >= lx + fw + 4 && mx < lx + lw && my >= fy && my < fy + 18;
-      RenderUtil.roundedRect(g, lx, fy, fw, 18, 2, argb((int)(fadeIn * 180.0F), 16, 16, 34));
-      g.fill(lx, fy, lx + fw, fy + 1, argb((int)(fadeIn * 160.0F), aR, aG, aB));
+      int toggleW = 44;
+      int fw = lw - toggleW - addBtnW - 8;
+      int toggleX = lx;
+      int fieldX = lx + toggleW + 4;
+      int abx = fieldX + fw + 4;
+      boolean toggleHov = mx >= toggleX && mx < toggleX + toggleW && my >= fy && my < fy + 18;
+      RenderUtil.roundedRect(g, toggleX, fy, toggleW, 18, 2, argb((int)(fadeIn * 180.0F), 16, 16, 34));
+      g.fill(toggleX, fy, toggleX + toggleW, fy + 1, argb((int)(fadeIn * 160.0F), aR, aG, aB));
+      g.centeredText(this.font, this.tokenMode ? "Token" : "User", toggleX + toggleW / 2, fy + 5, argb((int)(fadeIn * (toggleHov ? 255 : 200)), aR, aG, aB));
+      boolean btnHov = mx >= abx && mx < abx + addBtnW && my >= fy && my < fy + 18;
+      RenderUtil.roundedRect(g, fieldX, fy, fw, 18, 2, argb((int)(fadeIn * 180.0F), 16, 16, 34));
+      g.fill(fieldX, fy, fieldX + fw, fy + 1, argb((int)(fadeIn * 160.0F), aR, aG, aB));
       String disp = this.addField.text;
       boolean showCursor = this.addField.cursorVisible();
       String rendered = disp + (showCursor ? "|" : "");
@@ -218,16 +227,15 @@ public class AccountManagerScreen extends Screen {
       }
 
       if (disp.isEmpty()) {
-         g.text(this.font, "add username...", lx + 4, fy + 5, argb((int)(fadeIn * 70.0F), 170, 187, 204), false);
+         g.text(this.font, this.tokenMode ? "paste token..." : "add username...", fieldX + 4, fy + 5, argb((int)(fadeIn * 70.0F), 170, 187, 204), false);
       } else {
-         g.text(this.font, rendered, lx + 4, fy + 5, argb((int)(fadeIn * 230.0F), 221, 238, 255), false);
+         g.text(this.font, rendered, fieldX + 4, fy + 5, argb((int)(fadeIn * 230.0F), 221, 238, 255), false);
       }
 
-      int abx = lx + fw + 4;
       int abg = btnHov ? argb((int)(fadeIn * 220.0F), 24, 24, 48) : argb((int)(fadeIn * 160.0F), 12, 12, 28);
       RenderUtil.roundedRect(g, abx, fy, addBtnW, 18, 2, abg);
       g.fill(abx, fy, abx + addBtnW, fy + 1, argb((int)(fadeIn * (btnHov ? 200 : 140)), aR, aG, aB));
-      g.centeredText(this.font, "Add", abx + addBtnW / 2, fy + 5, argb((int)(fadeIn * (btnHov ? 255 : 200)), aR, aG, aB));
+      g.centeredText(this.font, this.tokenMode ? "Log" : "Add", abx + addBtnW / 2, fy + 5, argb((int)(fadeIn * (btnHov ? 255 : 200)), aR, aG, aB));
       int msY = fy + 24;
       boolean msHov = mx >= lx && mx < lx + lw && my >= msY && my < msY + 18;
       RenderUtil.roundedRect(g, lx, msY, lw, 18, 2, argb((int)(fadeIn * (msHov ? 210 : 160)), msHov ? 22 : 14, msHov ? 22 : 14, msHov ? 44 : 30));
@@ -279,7 +287,9 @@ public class AccountManagerScreen extends Screen {
 
             if (mx >= lx && mx < lx + lw - delW - 4 && my >= ey && my < ey + 18) {
                if (!name.equals(current)) {
-                  if (OyVey.accountManager.isMicrosoft(name)) {
+                  if (OyVey.accountManager.isToken(name)) {
+                     this.reloginToken(name);
+                  } else if (OyVey.accountManager.isMicrosoft(name)) {
                      this.reloginMicrosoft(name);
                   } else {
                      boolean ok = OyVey.accountManager.switchAccount(name);
@@ -294,8 +304,17 @@ public class AccountManagerScreen extends Screen {
 
          int addRowTop = cy + headerH + listH + 8;
          int addBtnW = 32;
-         int fw = lw - addBtnW - 4;
-         int abx = lx + fw + 4;
+         int toggleW = 44;
+         int fw = lw - toggleW - addBtnW - 8;
+         int toggleX = lx;
+         int fieldX = lx + toggleW + 4;
+         int abx = fieldX + fw + 4;
+         if (mx >= toggleX && mx < toggleX + toggleW && my >= addRowTop && my < addRowTop + 18) {
+            this.tokenMode = !this.tokenMode;
+            this.addField.text = "";
+            return true;
+         }
+
          if (mx >= abx && mx < abx + addBtnW && my >= addRowTop && my < addRowTop + 18) {
             this.doAdd();
             return true;
@@ -339,6 +358,18 @@ public class AccountManagerScreen extends Screen {
    }
 
    private void doAdd() {
+      if (this.tokenMode) {
+         String token = this.addField.text.trim();
+         if (token.isEmpty()) {
+            this.statusMsg = "paste a token";
+            this.statusOk = false;
+         } else {
+            this.tokenLogin(token);
+         }
+
+         return;
+      }
+
       String name = this.addField.text.trim();
       if (name.isEmpty()) {
          this.statusMsg = "enter a username";
@@ -420,6 +451,125 @@ public class AccountManagerScreen extends Screen {
       }
    }
 
+   private void tokenLogin(String token) {
+      if (this.microsoftBusy) {
+         this.statusMsg = "a login is already running...";
+         this.statusOk = false;
+         return;
+      }
+
+      this.microsoftBusy = true;
+      this.statusMsg = "logging in with token...";
+      this.statusOk = true;
+      Thread t = new Thread(() -> {
+         try {
+            HttpClient client = HttpClient.newHttpClient();
+            HttpRequest req = HttpRequest.newBuilder()
+               .uri(URI.create("https://api.minecraftservices.com/minecraft/profile"))
+               .header("Authorization", "Bearer " + token)
+               .GET()
+               .build();
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+               Minecraft.getInstance().execute(() -> {
+                  this.microsoftBusy = false;
+                  this.statusMsg = "token rejected (HTTP " + resp.statusCode() + ")";
+                  this.statusOk = false;
+               });
+               return;
+            }
+
+            JsonObject obj = JsonParser.parseString(resp.body()).getAsJsonObject();
+            String name = obj.get("name").getAsString();
+            String id = obj.get("id").getAsString();
+            UUID uuid = parseUuid(id);
+            Minecraft.getInstance().execute(() -> {
+               boolean ok = OyVey.accountManager.setOnlineSession(name, uuid, token);
+               OyVey.accountManager.saveToken(name, token);
+               OyVey.configManager.save();
+               this.microsoftBusy = false;
+               this.statusMsg = ok ? "signed in as " + name : "session swap failed";
+               this.statusOk = ok;
+               this.addField.text = "";
+            });
+         } catch (Exception e) {
+            Minecraft.getInstance().execute(() -> {
+               this.microsoftBusy = false;
+               this.statusMsg = "login failed: " + (e.getMessage() == null ? e.toString() : e.getMessage());
+               this.statusOk = false;
+            });
+         }
+      }, "token-login");
+      t.setDaemon(true);
+      t.start();
+   }
+
+   private void reloginToken(String name) {
+      if (this.microsoftBusy) {
+         this.statusMsg = "a login is already running...";
+         this.statusOk = false;
+         return;
+      }
+
+      String token = OyVey.accountManager.getToken(name);
+      if (token == null || token.isEmpty()) {
+         this.statusMsg = "no saved token for " + name;
+         this.statusOk = false;
+         return;
+      }
+
+      this.microsoftBusy = true;
+      this.statusMsg = "logging into " + name + "...";
+      this.statusOk = true;
+      Thread t = new Thread(() -> {
+         try {
+            HttpClient client = HttpClient.newHttpClient();
+            HttpRequest req = HttpRequest.newBuilder()
+               .uri(URI.create("https://api.minecraftservices.com/minecraft/profile"))
+               .header("Authorization", "Bearer " + token)
+               .GET()
+               .build();
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+               Minecraft.getInstance().execute(() -> {
+                  this.microsoftBusy = false;
+                  this.statusMsg = "token expired - remove and re-add " + name;
+                  this.statusOk = false;
+               });
+               return;
+            }
+
+            JsonObject obj = JsonParser.parseString(resp.body()).getAsJsonObject();
+            String n = obj.get("name").getAsString();
+            String id = obj.get("id").getAsString();
+            UUID uuid = parseUuid(id);
+            Minecraft.getInstance().execute(() -> {
+               boolean ok = OyVey.accountManager.setOnlineSession(n, uuid, token);
+               OyVey.accountManager.saveToken(n, token);
+               OyVey.configManager.save();
+               this.microsoftBusy = false;
+               this.statusMsg = ok ? "signed in as " + n : "session swap failed";
+               this.statusOk = ok;
+            });
+         } catch (Exception e) {
+            Minecraft.getInstance().execute(() -> {
+               this.microsoftBusy = false;
+               this.statusMsg = "login failed: " + (e.getMessage() == null ? e.toString() : e.getMessage());
+               this.statusOk = false;
+            });
+         }
+      }, "token-login");
+      t.setDaemon(true);
+      t.start();
+   }
+
+   private static UUID parseUuid(String id) {
+      String clean = id.replace("-", "");
+      long msb = Long.parseUnsignedLong(clean.substring(0, 16), 16);
+      long lsb = Long.parseUnsignedLong(clean.substring(16, 32), 16);
+      return new UUID(msb, lsb);
+   }
+
    private static void openUrl(String url) {
       try {
          if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Action.BROWSE)) {
@@ -448,7 +598,7 @@ public class AccountManagerScreen extends Screen {
       private long blinkBase = System.currentTimeMillis();
 
       void type(int codepoint) {
-         if (this.text.length() < 16) {
+         if (this.text.length() < 512) {
             this.text = this.text + new String(Character.toChars(codepoint));
             this.blinkBase = System.currentTimeMillis();
          }

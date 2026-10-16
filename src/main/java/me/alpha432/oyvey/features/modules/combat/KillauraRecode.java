@@ -11,6 +11,7 @@ import java.util.stream.StreamSupport;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.event.Stage;
 import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
+import me.alpha432.oyvey.event.impl.render.Render2DEvent;
 import me.alpha432.oyvey.event.impl.network.PacketEvent;
 import me.alpha432.oyvey.event.system.Subscribe;
 import me.alpha432.oyvey.features.commands.Command;
@@ -20,9 +21,13 @@ import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.manager.RecordedRotationManager;
 import me.alpha432.oyvey.mixin.render.accessor.ClientInputAccessor;
 import net.minecraft.client.player.ClientInput;
+import net.minecraft.client.AttackIndicatorStatus;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
-import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.tags.ItemTags;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -42,11 +47,14 @@ import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.HitResult.Type;
 
 public class KillauraRecode extends Module {
+   public final Setting<Boolean> grim = this.register(new Setting<>("Grim", false, "Use conservative rotations, movement, reach, and attack checks for Grim servers."));
    public final Setting<Double> reach = this.register(new Setting<>("Reach", 3.0, 1.0, 6.0));
+   public final Setting<Double> searchRange = this.register(new Setting<>("SearchRange", 3.0, 1.0, 30.0));
    public final Setting<Boolean> mobs = this.register(new Setting<>("Mobs", false));
    public final Setting<Boolean> requireArmor = this.register(new Setting<>("RequireArmor", false));
    public final Setting<Boolean> respectFriends = this.register(new Setting<>("RespectFriends", true));
    public final Setting<Boolean> wallCheck = this.register(new Setting<>("WallCheck", true));
+   public final Setting<Boolean> raycast = this.register(new Setting<>("Raycast", true));
    public final Setting<KillauraRecode.TargetMode> targetMode = this.register(new Setting<>("TargetMode", KillauraRecode.TargetMode.CLOSEST));
    public final Setting<Boolean> cooldown = this.register(new Setting<>("1.9Cooldown", true));
    public final Setting<Boolean> onlyCrits = this.register(new Setting<>("OnlyCrits", false));
@@ -56,7 +64,7 @@ public class KillauraRecode extends Module {
    public final Setting<Integer> aps = this.register(new Setting<>("APS", 12, 1, 20, v -> !this.apsRand.getValue()));
    public final Setting<KillauraRecode.RotationMode> rotMode = this.register(new Setting<>("RotationMode", KillauraRecode.RotationMode.SMOOTH));
    public final Setting<Float> rotSpeed = this.register(
-      new Setting<>("RotSpeed", 3.5F, 0.5F, 15.0F, v -> this.rotMode.getValue() == KillauraRecode.RotationMode.SMOOTH)
+      new Setting<>("RotSpeed", 3.5F, 0.5F, 15.0F, v -> this.grim.getValue() || this.rotMode.getValue() == KillauraRecode.RotationMode.SMOOTH)
    );
    public final Setting<Float> predictTicks = this.register(
       new Setting<>("PredictTicks", 1.5F, 0.0F, 4.0F, v -> this.rotMode.getValue() == KillauraRecode.RotationMode.PREDICT)
@@ -94,6 +102,9 @@ public class KillauraRecode extends Module {
    public final Setting<Boolean> correctMove = this.register(new Setting<>("CorrectMove", true));
    public final Setting<KillauraRecode.MoveFix> moveFix = this.register(new Setting<>("MoveFix", KillauraRecode.MoveFix.GRIM));
    public final Setting<KillauraRecode.BlockMode> blockMode = this.register(new Setting<>("AutoBlock", KillauraRecode.BlockMode.OFF));
+   public final Setting<Boolean> fakeAutoBlock = this.register(new Setting<>("FakeAutoBlock", false));
+   public final Setting<Boolean> showBlockCooldown = this.register(new Setting<>("ShowCooldown", true,
+      v -> this.fakeAutoBlock.getValue() || this.blockMode.getValue() == BlockMode.FAKE));
    public final Setting<Boolean> shieldBreak = this.register(new Setting<>("AutoShieldBreak", false));
    public final Setting<Boolean> shieldSwapBack = this.register(new Setting<>("ShieldSwapBack", true, v -> this.shieldBreak.getValue()));
    public final Setting<Boolean> armSwing = this.register(new Setting<>("ArmSwing", true));
@@ -141,7 +152,8 @@ public class KillauraRecode extends Module {
    private int switchIndex = 0;
    private long hsHoldUntil = 0L;
    private boolean autoBlockActive = false;
-   private boolean fakingBlock = false;
+   private boolean serverBlockHeld;
+   private int serverBlockSlot = -1;
    private int shieldSwapPrev = -1;
    private int recordedPatternIndex = 0;
    private float recordedReplaySpeed = 0.1F;
@@ -166,6 +178,8 @@ public class KillauraRecode extends Module {
       this.lastSwitchTime = 0L;
       this.nextAttackDelay = this.rollDelay();
       this.autoBlockActive = false;
+      this.serverBlockHeld = false;
+      this.serverBlockSlot = -1;
       this.jitterPhase = 0.0F;
       this.jitterOffYaw = 0.0F;
       this.jitterOffPitch = 0.0F;
@@ -191,6 +205,7 @@ public class KillauraRecode extends Module {
    @Override
    public void onDisable() {
       isRotating = false;
+      this.stopServerBlock();
       if (this.hasSaved && mc.player != null) {
          OyVey.rotationManager.setPlayerRotations(this.savedYaw, this.savedPitch);
       }
@@ -200,7 +215,6 @@ public class KillauraRecode extends Module {
       }
 
       this.autoBlockActive = false;
-      this.fakingBlock = false;
       this.hasSaved = false;
       this.hasSentRot = false;
       this.sentTargetId = -1;
@@ -255,15 +269,35 @@ public class KillauraRecode extends Module {
             // carried-item packet cannot leak into the post-movement portion of a tick.
             this.restoreShieldBreakSwap();
 
-            KillauraRecode.BlockMode bm = this.blockMode.getValue();
+            KillauraRecode.BlockMode bm = this.grim.getValue()
+               || this.fakeAutoBlock.getValue() && !isFullBlockMode(this.blockMode.getValue())
+               ? KillauraRecode.BlockMode.OFF : this.blockMode.getValue();
+            if (!isFullBlockMode(bm)) {
+               this.stopServerBlock();
+            }
             if (this.targetRots != null && this.currentTarget != null) {
-               boolean attackReady = !mc.player.isUsingItem() && this.shouldAttack();
+               if (isFullBlockMode(bm)) {
+                  this.updateServerBlock(false);
+               }
+               boolean ownedSwordBlock = this.serverBlockHeld
+                  && mc.player.getUsedItemHand() == InteractionHand.MAIN_HAND
+                  && mc.player.getMainHandItem().is(ItemTags.SWORDS);
+               boolean attackReady = (!mc.player.isUsingItem() || ownedSwordBlock) && this.shouldAttack();
                if (attackReady) {
                   // PRE runs after local movement physics. Mutating sprint here makes
                   // the server simulate non-sprint speed for already-sprinted motion.
                   // Sprint resets belong in KeyboardInput.tick on the following tick.
-                  this.tryShieldBreakSwap();
+                  if (!this.grim.getValue() && !isFullBlockMode(bm)) {
+                     this.tryShieldBreakSwap();
+                  }
+                  if (bm == BlockMode.FULL2) {
+                     this.updateServerBlock(true);
+                  }
                   this.performAttack(this.currentTarget);
+                  if (bm == BlockMode.FULL2) {
+                     // Keep use/attack/use together in PRE, with no release packet.
+                     this.updateServerBlock(true);
+                  }
                   SprintModule.lastAttackMs = System.currentTimeMillis();
                   this.lastAttackTime = System.currentTimeMillis();
                   this.nextAttackDelay = this.rollDelay();
@@ -271,7 +305,7 @@ public class KillauraRecode extends Module {
                      this.hsHoldUntil = System.currentTimeMillis() + this.rollHsDelay();
                   }
 
-                  if (this.multi.getValue()) {
+                  if (!this.grim.getValue() && this.multi.getValue()) {
                      this.switchIndex++;
                   }
                } else {
@@ -282,6 +316,7 @@ public class KillauraRecode extends Module {
                // the rotation serialized on the preceding tick, never an unsent angle.
                OyVey.rotationManager.setPlayerRotations(this.targetRots[0], this.targetRots[1]);
             } else {
+               this.stopServerBlock();
                if (this.autoBlockActive && mc.player.isUsingItem()) {
                   mc.gameMode.releaseUsingItem(mc.player);
                   this.autoBlockActive = false;
@@ -292,8 +327,11 @@ public class KillauraRecode extends Module {
    }
 
    private void updateTargeting() {
+      if (this.grim.getValue()) {
+         this.switchIndex = 0;
+      }
       this.notifyRecordedMode();
-      if (this.rotMode.getValue() == KillauraRecode.RotationMode.RECORDED && !OyVey.recordedRotationManager.hasPattern()) {
+      if (!this.grim.getValue() && this.rotMode.getValue() == KillauraRecode.RotationMode.RECORDED && !OyVey.recordedRotationManager.hasPattern()) {
          this.currentTarget = null;
          this.targetRots = null;
          this.finishSilentRotation();
@@ -320,7 +358,8 @@ public class KillauraRecode extends Module {
             this.switchIndex = 0;
          }
 
-         if (this.switchMode.getValue()
+         if (!this.grim.getValue()
+            && this.switchMode.getValue()
             && !this.multi.getValue()
             && targets.size() > 1
             && System.currentTimeMillis() - this.lastSwitchTime >= this.switchDelay.getValue().intValue()) {
@@ -328,7 +367,7 @@ public class KillauraRecode extends Module {
             this.lastSwitchTime = System.currentTimeMillis();
          }
 
-         this.currentTarget = (this.switchMode.getValue() || this.multi.getValue()) && targets.size() > 1
+         this.currentTarget = !this.grim.getValue() && (this.switchMode.getValue() || this.multi.getValue()) && targets.size() > 1
             ? targets.get(this.switchIndex)
             : targets.get(0);
          if (this.currentTarget.getId() != previousTargetId) {
@@ -365,6 +404,10 @@ public class KillauraRecode extends Module {
    }
 
    private void notifyRecordedMode() {
+      if (this.grim.getValue()) {
+         this.lastRotationMode = null;
+         return;
+      }
       KillauraRecode.RotationMode current = this.rotMode.getValue();
       if (current == this.lastRotationMode) {
          return;
@@ -388,7 +431,7 @@ public class KillauraRecode extends Module {
    }
 
    private List<Entity> getTargets() {
-      double r = this.effectiveReach();
+      double r = this.searchRange.getValue();
       this.botTracker.keySet().removeIf(id -> {
          Entity e = mc.level.getEntity(id);
          return e == null || !e.isAlive() || mc.player.distanceTo(e) > r + 4.0;
@@ -397,10 +440,10 @@ public class KillauraRecode extends Module {
          .filter(e -> e != mc.player && e.isAlive())
          .filter(e -> e instanceof Player || this.mobs.getValue() && e instanceof Mob)
          .filter(e -> !this.isFriend(e))
-         .filter(this::isWithinAttackRange)
+         .filter(this::isWithinSearchRange)
          .filter(e -> !this.isBot(e))
          .filter(e -> !this.requireArmor.getValue() ? true : e instanceof LivingEntity le && le.getArmorValue() > 0)
-         .filter(e -> !this.wallCheck.getValue() || this.hasLineOfSight(e))
+         .filter(e -> !(this.grim.getValue() || this.wallCheck.getValue()) || this.hasLineOfSight(e))
          .collect(Collectors.toList());
       list.sort(this.buildComparator());
       return list;
@@ -479,7 +522,7 @@ public class KillauraRecode extends Module {
       if (hit.isEmpty()) {
          return false;
       } else {
-         return !this.wallCheck.getValue()
+         return !(this.grim.getValue() || this.wallCheck.getValue())
             ? true
             : mc.level.clip(new ClipContext(eyes, hit.get(), Block.COLLIDER, Fluid.NONE, mc.player)).getType() == Type.MISS;
       }
@@ -487,7 +530,17 @@ public class KillauraRecode extends Module {
 
    private double effectiveReach() {
       double serverRange = mc.player.getAttributeValue(Attributes.ENTITY_INTERACTION_RANGE);
-      return Math.max(0.0, Math.min(this.reach.getValue(), serverRange));
+      double configuredReach = this.grim.getValue() ? Math.min(this.reach.getValue(), 3.0) : this.reach.getValue();
+      return Math.max(0.0, Math.min(configuredReach, serverRange));
+   }
+
+   private boolean isWithinSearchRange(Entity target) {
+      if (target == null || target.isRemoved()) {
+         return false;
+      }
+
+      double range = this.searchRange.getValue();
+      return this.distanceToHitboxSqr(target) <= range * range;
    }
 
    private boolean isWithinAttackRange(Entity target) {
@@ -495,21 +548,27 @@ public class KillauraRecode extends Module {
          return false;
       }
 
+      double effectiveReach = this.effectiveReach();
+      return this.distanceToHitboxSqr(target) <= effectiveReach * effectiveReach
+         && mc.player.isWithinAttackRange(mc.player.getMainHandItem(), target.getBoundingBox(), 0.0);
+   }
+
+   private double distanceToHitboxSqr(Entity target) {
       AABB box = target.getBoundingBox();
       Vec3 eyes = mc.player.getEyePosition();
       double closestX = Mth.clamp(eyes.x, box.minX, box.maxX);
       double closestY = Mth.clamp(eyes.y, box.minY, box.maxY);
       double closestZ = Mth.clamp(eyes.z, box.minZ, box.maxZ);
-      double configuredDistanceSqr = eyes.distanceToSqr(closestX, closestY, closestZ);
-      double effectiveReach = this.effectiveReach();
-      return configuredDistanceSqr <= effectiveReach * effectiveReach
-         && mc.player.isWithinAttackRange(mc.player.getMainHandItem(), box, 0.0);
+      return eyes.distanceToSqr(closestX, closestY, closestZ);
    }
 
    private float[] computeAimPoint(Entity target) {
       double tx = target.getX();
       double ty = target.getY() + target.getEyeHeight() * 0.6;
       double tz = target.getZ();
+      if (this.grim.getValue()) {
+         return this.rawRotation(tx, ty, tz);
+      }
       if (this.rotMode.getValue() == KillauraRecode.RotationMode.PREDICT) {
          float ticks = this.predictTicks.getValue();
          tx += target.getDeltaMovement().x * ticks;
@@ -547,6 +606,17 @@ public class KillauraRecode extends Module {
    private float[] buildRotations(float[] raw) {
       float tYaw = raw[0];
       float tPitch = raw[1];
+      if (this.grim.getValue()) {
+         // Step from the last sent angle so changing modes cannot snap the
+         // server rotation to an old smoothing or recorded-pattern state.
+         float speed = Math.min(this.rotSpeed.getValue(), 6.0F);
+         float yaw = this.sentYaw + Mth.clamp(Mth.wrapDegrees(tYaw - this.sentYaw), -speed * 4.0F, speed * 4.0F);
+         float pitch = Mth.clamp(this.sentPitch + Mth.clamp(tPitch - this.sentPitch, -speed * 2.0F, speed * 2.0F), -90.0F, 90.0F);
+         float[] rotation = this.quantizeRotation(yaw, pitch);
+         this.smoothYaw = rotation[0];
+         this.smoothPitch = rotation[1];
+         return rotation;
+      }
       if (this.style.getValue() && this.rotMode.getValue() != KillauraRecode.RotationMode.RECORDED) {
          return this.buildStyleRotations(tYaw, tPitch);
       }
@@ -684,7 +754,7 @@ public class KillauraRecode extends Module {
          return false;
       }
 
-      if (this.style.getValue() && !this.styleAtTarget) {
+      if (!this.grim.getValue() && this.style.getValue() && !this.styleAtTarget) {
          return false;
       }
 
@@ -696,7 +766,9 @@ public class KillauraRecode extends Module {
       boolean baseOk;
       if (this.cooldown.getValue()) {
          float strength = mc.player.getAttackStrengthScale(0.0F);
-         baseOk = this.onlyCrits.getValue() ? strength >= 1.0F && falling : strength >= 0.9F;
+         baseOk = this.onlyCrits.getValue()
+            ? strength >= 1.0F && falling
+            : strength >= (this.grim.getValue() ? 1.0F : 0.9F);
       } else {
          boolean delayOk = System.currentTimeMillis() - this.lastAttackTime >= this.nextAttackDelay;
          baseOk = this.onlyCrits.getValue() ? falling && delayOk : delayOk;
@@ -714,7 +786,10 @@ public class KillauraRecode extends Module {
          && this.hasSentRot
          && target.getId() == this.sentTargetId
          && this.isWithinAttackRange(target)
-         && this.rotationHitsTarget(target, this.sentYaw, this.sentPitch);
+         // Grim always checks the rotation sent on the preceding tick, even
+         // when the separate Raycast setting is disabled.
+         && (!(this.grim.getValue() || this.raycast.getValue())
+            || this.rotationHitsTarget(target, this.sentYaw, this.sentPitch));
    }
 
    private boolean hitSelectGate() {
@@ -780,7 +855,11 @@ public class KillauraRecode extends Module {
    }
 
    private void updateAutoBlock(KillauraRecode.BlockMode mode) {
-      if (mode == KillauraRecode.BlockMode.OFF) {
+      if (isFullBlockMode(mode)) {
+         this.updateServerBlock(false);
+         return;
+      }
+      if (mode == KillauraRecode.BlockMode.OFF || mode == KillauraRecode.BlockMode.FAKE) {
          if (this.autoBlockActive && mc.player.isUsingItem()) {
             mc.gameMode.releaseUsingItem(mc.player);
          }
@@ -794,22 +873,68 @@ public class KillauraRecode extends Module {
          return;
       }
 
-      if (mode == KillauraRecode.BlockMode.FAKE) {
-         this.startFakeBlock();
-      } else {
-         InteractionHand hand = mc.player.getOffhandItem().getItem() instanceof ShieldItem
-            ? InteractionHand.OFF_HAND
-            : InteractionHand.MAIN_HAND;
-         mc.gameMode.useItem(mc.player, hand);
-      }
+      InteractionHand hand = mc.player.getOffhandItem().getItem() instanceof ShieldItem
+         ? InteractionHand.OFF_HAND
+         : InteractionHand.MAIN_HAND;
+      mc.gameMode.useItem(mc.player, hand);
 
       this.autoBlockActive = mc.player.isUsingItem();
    }
 
-   private void startFakeBlock() {
-      this.fakingBlock = true;
+   private static boolean isFullBlockMode(BlockMode mode) {
+      return mode == BlockMode.FULL || mode == BlockMode.FULL2;
+   }
+
+   private void updateServerBlock(boolean refresh) {
+      boolean sword = mc.player.getMainHandItem().is(ItemTags.SWORDS);
+      boolean usingOtherItem = mc.player.isUsingItem() && mc.player.getUsedItemHand() != InteractionHand.MAIN_HAND;
+      if (!sword || usingOtherItem || mc.player.isSpectator()) {
+         this.stopServerBlock();
+         return;
+      }
+      int slot = mc.player.getInventory().getSelectedSlot();
+      if (this.serverBlockHeld && this.serverBlockSlot == slot) {
+         if (refresh) {
+            mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
+         }
+         return;
+      }
+      this.stopServerBlock();
       mc.gameMode.useItem(mc.player, InteractionHand.MAIN_HAND);
-      this.fakingBlock = false;
+      // Modern clients may return PASS for a sword even though a translated 1.8
+      // server receives the use-item packet and starts blocking.
+      this.serverBlockHeld = true;
+      this.serverBlockSlot = slot;
+   }
+
+   private void stopServerBlock() {
+      if (!this.serverBlockHeld) {
+         return;
+      }
+      this.serverBlockHeld = false;
+      this.serverBlockSlot = -1;
+      if (mc.player != null && mc.player.connection != null) {
+         mc.player.connection.send(new ServerboundPlayerActionPacket(
+            ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM, BlockPos.ZERO, Direction.DOWN));
+         if (mc.player.isUsingItem() && mc.player.getUsedItemHand() == InteractionHand.MAIN_HAND) {
+            mc.player.releaseUsingItem();
+         }
+      }
+   }
+
+   @Subscribe
+   private void onServerBlockPacket(PacketEvent.Send event) {
+      if (!this.serverBlockHeld || nullCheck() || this.grim.getValue() || !isFullBlockMode(this.blockMode.getValue())
+         || this.currentTarget == null || !this.currentTarget.isAlive() || this.targetRots == null
+         || mc.player.getInventory().getSelectedSlot() != this.serverBlockSlot
+         || !mc.player.getMainHandItem().is(ItemTags.SWORDS)
+         || mc.player.isUsingItem() && mc.player.getUsedItemHand() != InteractionHand.MAIN_HAND) {
+         return;
+      }
+      if (event.getPacket() instanceof ServerboundPlayerActionPacket action
+         && action.getAction() == ServerboundPlayerActionPacket.Action.RELEASE_USE_ITEM) {
+         event.cancel();
+      }
    }
 
    private void tryShieldBreakSwap() {
@@ -841,9 +966,7 @@ public class KillauraRecode extends Module {
    }
 
    public void applyGrimMovementCorrection(ClientInput input) {
-      if (!this.isEnabled()
-         || !this.correctMove.getValue()
-         || this.moveFix.getValue() != KillauraRecode.MoveFix.GRIM
+      if (!this.isGrimMovementCorrectionConfigured()
          || this.targetRots == null
          || !this.hasSaved
          || mc.player == null) {
@@ -887,18 +1010,37 @@ public class KillauraRecode extends Module {
    }
 
    public boolean isGrimMovementCorrectionConfigured() {
-      return this.isEnabled() && this.correctMove.getValue() && this.moveFix.getValue() == KillauraRecode.MoveFix.GRIM;
+      return this.isEnabled() && (this.grim.getValue() || this.correctMove.getValue() && this.moveFix.getValue() == KillauraRecode.MoveFix.GRIM);
    }
 
    public boolean isGrimSprintAllowed() {
       return this.grimSprintAllowed;
    }
 
-   @Subscribe
-   private void onPacketSend(PacketEvent.Send event) {
-      if (this.fakingBlock && event.getPacket() instanceof ServerboundUseItemPacket) {
-         event.cancel();
+   public boolean isFakeBlocking() {
+      return this.isEnabled() && !nullCheck()
+         && (this.fakeAutoBlock.getValue() || this.blockMode.getValue() == BlockMode.FAKE || this.serverBlockHeld)
+         && (!mc.player.isUsingItem() || this.serverBlockHeld && mc.player.getUsedItemHand() == InteractionHand.MAIN_HAND)
+         && !mc.player.isSpectator() && mc.player.isAlive()
+         && mc.player.getMainHandItem().is(ItemTags.SWORDS)
+         && this.currentTarget != null && this.currentTarget.isAlive() && this.targetRots != null
+         && this.isWithinSearchRange(this.currentTarget);
+   }
+
+   @Override
+   public void onRender2D(Render2DEvent event) {
+      if (!this.showBlockCooldown.getValue() || !this.isFakeBlocking()
+         || mc.options.hideGui || !mc.options.getCameraType().isFirstPerson()
+         || mc.options.attackIndicator().get() != AttackIndicatorStatus.OFF) {
+         return;
       }
+
+      // Respect an existing crosshair/hotbar indicator; provide one when it is off.
+      float strength = Mth.clamp(mc.player.getAttackStrengthScale(event.getDelta()), 0.0F, 1.0F);
+      int x = mc.getWindow().getGuiScaledWidth() / 2 - 8;
+      int y = mc.getWindow().getGuiScaledHeight() / 2 + 12;
+      event.getContext().fill(x, y, x + 16, y + 3, 0xA0000000);
+      event.getContext().fill(x, y, x + Math.round(16 * strength), y + 3, 0xFFE8F6FC);
    }
 
    public Entity getTarget() {
@@ -910,6 +1052,7 @@ public class KillauraRecode extends Module {
       LEGIT,
       PACKET,
       FULL,
+      FULL2,
       VANILLA,
       FAKE;
    }

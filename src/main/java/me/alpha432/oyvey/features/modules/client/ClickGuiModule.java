@@ -20,8 +20,8 @@ public class ClickGuiModule extends Module {
    public Setting<Integer> rainbowHue = this.num("Delay", 240, 0, 600);
    public Setting<Float> rainbowBrightness = this.num("Brightness", 150.0F, 1.0F, 255.0F);
    public Setting<Float> rainbowSaturation = this.num("Saturation", 150.0F, 1.0F, 255.0F);
-   public Setting<ClickGuiModule.GuiMode> mode = this.register(new Setting<>("Mode", ClickGuiModule.GuiMode.TAB));
-   public Setting<Float> guiScale = this.num("GuiScale", 1.0F, 0.5F, 2.0F);
+   public Setting<ClickGuiModule.GuiMode> mode = this.register(new Setting<>("Mode", ClickGuiModule.GuiMode.DROPDOWN));
+   public Setting<Float> guiScale = this.num("GuiScale", 0.85F, 0.5F, 2.0F);
    public Setting<ClickGuiModule.Language> language = this.register(new Setting<>("Language", ClickGuiModule.Language.ENGLISH));
 
    public ClickGuiModule() {
@@ -63,6 +63,7 @@ public class ClickGuiModule extends Module {
    @Override
    public void onLoad() {
       this.customMenu.setValue(true);
+      this.mode.setValue(ClickGuiModule.GuiMode.DROPDOWN);
       OyVey.colorManager.setColor(this.color.getValue());
       OyVey.commandManager.setCommandPrefix(this.prefix.getValue());
    }

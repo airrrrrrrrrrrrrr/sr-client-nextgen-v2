@@ -4,8 +4,9 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import me.alpha432.oyvey.features.modules.render.Chams;
 import me.alpha432.oyvey.util.render.Layers;
 import net.minecraft.client.model.Model;
-import net.minecraft.client.model.geom.ModelPart;
+import net.minecraft.client.model.player.PlayerModel;
 import net.minecraft.client.renderer.SubmitNodeStorage;
+import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.feature.ModelFeatureRenderer.CrumblingOverlay;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -36,54 +37,13 @@ public class MixinSubmitNodeStorage {
       CrumblingOverlay crumblingOverlay,
       CallbackInfo ci
    ) {
-      if (!oyvey$replacing && Chams.renderingChamsEntity) {
+      if (!oyvey$replacing && Chams.renderingChamsEntity && model instanceof PlayerModel && state instanceof AvatarRenderState) {
          oyvey$replacing = true;
 
          try {
             ((SubmitNodeStorage)(Object)this)
                .submitModel(
                   model, state, poseStack, Layers.chamsDepthBias(renderType), lightCoords, overlayCoords, tintedColor, sprite, outlineColor, crumblingOverlay
-               );
-         } finally {
-            oyvey$replacing = false;
-         }
-
-         ci.cancel();
-      }
-   }
-
-   @Inject(method = "submitModelPart", at = @At("HEAD"), cancellable = true)
-   private void onSubmitModelPart(
-      ModelPart modelPart,
-      PoseStack poseStack,
-      RenderType renderType,
-      int lightCoords,
-      int overlayCoords,
-      TextureAtlasSprite sprite,
-      boolean sheeted,
-      boolean hasFoil,
-      int tintedColor,
-      CrumblingOverlay crumblingOverlay,
-      int outlineColor,
-      CallbackInfo ci
-   ) {
-      if (!oyvey$replacing && Chams.renderingChamsEntity) {
-         oyvey$replacing = true;
-
-         try {
-            ((SubmitNodeStorage)(Object)this)
-               .submitModelPart(
-                  modelPart,
-                  poseStack,
-                  Layers.chamsDepthBias(renderType),
-                  lightCoords,
-                  overlayCoords,
-                  sprite,
-                  sheeted,
-                  hasFoil,
-                  tintedColor,
-                  crumblingOverlay,
-                  outlineColor
                );
          } finally {
             oyvey$replacing = false;

@@ -19,8 +19,6 @@ import net.minecraft.client.renderer.ShaderDefines;
 import net.minecraft.resources.Identifier;
 
 public class Pipelines {
-   private static final float CHAMS_DEPTH_BIAS_SCALE = -1.0F;
-   private static final float CHAMS_DEPTH_BIAS_CONSTANT = -1000000.0F;
    private static final Map<RenderPipeline, RenderPipeline> CHAMS_THROUGH_WALL_PIPELINES = Collections.synchronizedMap(new WeakHashMap<>());
    private static final Map<RenderPipeline, RenderPipeline> CHAMS_DEPTH_BIAS_PIPELINES = Collections.synchronizedMap(new WeakHashMap<>());
    private static final Map<RenderPipeline, RenderPipeline> HIDDEN_PLAYER_DEPTH_PIPELINES = Collections.synchronizedMap(new WeakHashMap<>());
@@ -105,7 +103,15 @@ public class Pipelines {
          .withPolygonMode(originalPipeline.getPolygonMode())
          .withCull(originalPipeline.isCull())
          .withColorTargetState(originalPipeline.getColorTargetState())
-         .withDepthStencilState(new DepthStencilState(originalDepth.depthTest(), originalDepth.writeDepth(), -1.0F, -1000000.0F));
+         // Do not move model depth toward the camera. A very large negative polygon
+         // offset breaks depth precision and can expose clipped triangles as giant
+         // black polygons with server resource-pack models. Chams only needs to
+         // bypass the depth test; it must not alter or write scene depth.
+         .withDepthStencilState(
+            new DepthStencilState(
+               CompareOp.ALWAYS_PASS, false, originalDepth.depthBiasScaleFactor(), originalDepth.depthBiasConstant()
+            )
+         );
       ShaderDefines shaderDefines = originalPipeline.getShaderDefines();
       shaderDefines.flags().forEach(builder::withShaderDefine);
       shaderDefines.values().forEach((name, value) -> {

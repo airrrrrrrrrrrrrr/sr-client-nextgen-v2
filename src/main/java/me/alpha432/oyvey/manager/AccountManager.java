@@ -28,6 +28,8 @@ public class AccountManager implements Jsonable {
    private final List<String> accounts = new ArrayList<>();
    private final Set<String> microsoftAccounts = new HashSet<>();
    private final Map<String, String> microsoftSessions = new HashMap<>();
+   private final Set<String> tokenAccounts = new HashSet<>();
+   private final Map<String, String> accountTokens = new HashMap<>();
 
    public void init() {
       String current = this.getCurrentName();
@@ -56,6 +58,8 @@ public class AccountManager implements Jsonable {
       this.accounts.remove(username);
       this.microsoftAccounts.remove(username);
       this.microsoftSessions.remove(username);
+      this.tokenAccounts.remove(username);
+      this.accountTokens.remove(username);
    }
 
    public boolean isMicrosoft(String username) {
@@ -71,6 +75,21 @@ public class AccountManager implements Jsonable {
 
    public String getMicrosoftSession(String username) {
       return this.microsoftSessions.get(username);
+   }
+
+   public boolean isToken(String username) {
+      return this.tokenAccounts.contains(username);
+   }
+
+   public void saveToken(String username, String token) {
+      this.tokenAccounts.add(username);
+      if (token != null && !token.isEmpty()) {
+         this.accountTokens.put(username, token);
+      }
+   }
+
+   public String getToken(String username) {
+      return this.accountTokens.get(username);
    }
 
    public boolean setOnlineSession(String name, UUID uuid, String accessToken) {
@@ -130,6 +149,12 @@ public class AccountManager implements Jsonable {
       JsonObject sessions = new JsonObject();
       this.microsoftSessions.forEach(sessions::addProperty);
       obj.add("sessions", sessions);
+      JsonArray tk = new JsonArray();
+      this.tokenAccounts.forEach(tk::add);
+      obj.add("tokenAccounts", tk);
+      JsonObject tokens = new JsonObject();
+      this.accountTokens.forEach(tokens::addProperty);
+      obj.add("tokens", tokens);
       return obj;
    }
 
@@ -138,6 +163,8 @@ public class AccountManager implements Jsonable {
       this.accounts.clear();
       this.microsoftAccounts.clear();
       this.microsoftSessions.clear();
+      this.tokenAccounts.clear();
+      this.accountTokens.clear();
       if (element.isJsonObject()) {
          JsonObject obj = element.getAsJsonObject();
          JsonArray arr = obj.getAsJsonArray("accounts");
@@ -152,6 +179,15 @@ public class AccountManager implements Jsonable {
 
          if (obj.has("sessions") && obj.get("sessions").isJsonObject()) {
             obj.getAsJsonObject("sessions").entrySet().forEach(en -> this.microsoftSessions.put(en.getKey(), en.getValue().getAsString()));
+         }
+
+         JsonArray tk = obj.getAsJsonArray("tokenAccounts");
+         if (tk != null) {
+            tk.forEach(e -> this.tokenAccounts.add(e.getAsString()));
+         }
+
+         if (obj.has("tokens") && obj.get("tokens").isJsonObject()) {
+            obj.getAsJsonObject("tokens").entrySet().forEach(en -> this.accountTokens.put(en.getKey(), en.getValue().getAsString()));
          }
       }
    }

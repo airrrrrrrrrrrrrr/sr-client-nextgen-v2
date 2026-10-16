@@ -6,7 +6,6 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
 import me.alpha432.oyvey.event.impl.render.Render3DEvent;
 import me.alpha432.oyvey.event.impl.render.RenderBlockOutlineEvent;
-import me.alpha432.oyvey.util.render.ChamsCompositeTarget;
 import me.alpha432.oyvey.util.traits.Util;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -23,22 +22,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(LevelRenderer.class)
 public class MixinLevelRenderer {
-   @Inject(method = "renderLevel", at = @At("HEAD"))
-   private void oyvey$beginChamsComposite(
-      GraphicsResourceAllocator allocator,
-      DeltaTracker tickCounter,
-      boolean renderBlockOutline,
-      CameraRenderState cameraRenderState,
-      Matrix4fc positionMatrix,
-      GpuBufferSlice fogBuffer,
-      Vector4f fogColor,
-      boolean renderSky,
-      ChunkSectionsToRender chunkSectionsToRender,
-      CallbackInfo ci
-   ) {
-      ChamsCompositeTarget.beginFrame();
-   }
-
    @Inject(method = "renderBlockOutline", at = @At("HEAD"), cancellable = true)
    public void renderBlockOutline(BufferSource bufferSource, PoseStack poseStack, boolean bl, LevelRenderState levelRenderState, CallbackInfo ci) {
       if (Util.EVENT_BUS.post(new RenderBlockOutlineEvent())) {
@@ -59,7 +42,6 @@ public class MixinLevelRenderer {
       ChunkSectionsToRender chunkSectionsToRender,
       CallbackInfo ci
    ) {
-      ChamsCompositeTarget.compositeToMain();
       PoseStack stack = new PoseStack();
       stack.pushPose();
       stack.mulPose(Axis.XP.rotationDegrees(Util.mc.gameRenderer.getMainCamera().xRot()));

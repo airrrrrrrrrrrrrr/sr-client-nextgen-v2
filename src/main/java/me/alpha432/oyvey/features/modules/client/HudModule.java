@@ -95,7 +95,7 @@ public abstract class HudModule extends Module {
          }
 
          if (shouldDrawDescription) {
-            String displayName = "sr client nextgen";
+            String displayName = this.getDisplayName();
             int textWidth = mc.font.width(displayName);
             int textHeight = 9;
             float textX = x + this.width + 5.0F;

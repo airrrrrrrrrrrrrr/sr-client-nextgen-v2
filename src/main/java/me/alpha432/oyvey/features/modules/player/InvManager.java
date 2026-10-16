@@ -33,6 +33,12 @@ public class InvManager extends Module {
    public final Setting<Boolean> autoArmor = this.register(new Setting<>("AutoArmor", true));
    public final Setting<Boolean> autoSort = this.register(new Setting<>("AutoSort", true));
    public final Setting<Boolean> throwJunk = this.register(new Setting<>("ThrowJunk", false));
+   public final Setting<Boolean> dropLavaBuckets = this.register(new Setting<>("DropLavaBuckets", false));
+   public final Setting<Boolean> dropWaterBuckets = this.register(new Setting<>("DropWaterBuckets", false));
+   public final Setting<Boolean> dropArrows = this.register(new Setting<>("DropArrows", false));
+   public final Setting<Boolean> dropSnowballs = this.register(new Setting<>("DropSnowballs", false));
+   public final Setting<Boolean> dropBows = this.register(new Setting<>("DropBows", false));
+   public final Setting<Boolean> dropXpBottles = this.register(new Setting<>("DropXPBottles", false));
    public final Setting<Boolean> dropDupes = this.register(new Setting<>("DropDupArmor", false));
    public final Setting<Boolean> dupeWeapons = this.register(new Setting<>("AlsoWeapons", true, v -> this.dropDupes.getValue()));
    public final Setting<Boolean> limitBlocks = this.register(new Setting<>("LimitBlocks", false));
@@ -124,6 +130,7 @@ public class InvManager extends Module {
       } else if (now - this.lastActionMs >= this.delay.getValue().intValue()) {
          this.lastActionMs = now;
          if ((!this.autoArmor.getValue() || !this.tryAutoArmor(inv))
+            && !this.tryThrowSelected(inv)
             && (!this.autoSort.getValue() || !this.tryAutoSort(inv))
             && (!this.throwJunk.getValue() || !this.tryThrowJunk(inv))
             && (!this.dropDupes.getValue() || !this.tryQueueDupes(inv))
@@ -334,6 +341,34 @@ public class InvManager extends Module {
          }
       }
 
+      return false;
+   }
+
+   private boolean shouldDropSelected(ItemStack stack) {
+      return !stack.isEmpty() && this.shouldDropSelectedItem(stack.getItem());
+   }
+
+   private boolean shouldDropSelectedItem(Item item) {
+      return this.dropLavaBuckets.getValue() && item == Items.LAVA_BUCKET
+         || this.dropWaterBuckets.getValue() && item == Items.WATER_BUCKET
+         || this.dropArrows.getValue() && (item == Items.ARROW || item == Items.TIPPED_ARROW || item == Items.SPECTRAL_ARROW)
+         || this.dropSnowballs.getValue() && item == Items.SNOWBALL
+         || this.dropBows.getValue() && item == Items.BOW
+         || this.dropXpBottles.getValue() && item == Items.EXPERIENCE_BOTTLE;
+   }
+
+   private boolean tryThrowSelected(InventoryMenu inv) {
+      if (mc.gameMode == null || mc.player.containerMenu != inv || !inv.getCarried().isEmpty()) {
+         return false;
+      }
+      // Main inventory, hotbar and offhand; armor and crafting slots are excluded.
+      for (int index = 9; index <= 45 && index < inv.slots.size(); index++) {
+         Slot slot = inv.slots.get(index);
+         if (slot.hasItem() && slot.mayPickup(mc.player) && this.shouldDropSelected(slot.getItem())) {
+            mc.gameMode.handleContainerInput(inv.containerId, index, 1, ContainerInput.THROW, mc.player);
+            return true;
+         }
+      }
       return false;
    }
 

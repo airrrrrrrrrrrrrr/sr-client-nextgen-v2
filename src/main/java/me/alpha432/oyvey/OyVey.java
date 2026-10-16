@@ -21,6 +21,7 @@ import me.alpha432.oyvey.manager.ScriptManager;
 import me.alpha432.oyvey.manager.ServerManager;
 import me.alpha432.oyvey.manager.SpeedManager;
 import me.alpha432.oyvey.proxy.ProxyManager;
+import me.alpha432.oyvey.util.BuildConfig;
 import me.alpha432.oyvey.util.TextUtil;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.ModInitializer;
@@ -52,7 +53,7 @@ public class OyVey implements ModInitializer, ClientModInitializer {
    public static DiscordRPCManager discordRPCManager;
 
    public void onInitialize() {
-      LOGGER.info("Pre-initializing {} v{}", "SRClient", "2.0");
+      LOGGER.info("Pre-initializing {}", BuildConfig.NAME);
       PayloadTypeRegistry.clientboundPlay().register(LunarApolloPayload.TYPE, LunarApolloPayload.CODEC);
       configManager = new ConfigManager();
       preferences = new PreferencesManager();
@@ -81,7 +82,7 @@ public class OyVey implements ModInitializer, ClientModInitializer {
    }
 
    public void onInitializeClient() {
-      LOGGER.info("Initializing {}", "SRClient 2.0");
+      LOGGER.info("Initializing {}", BuildConfig.NAME);
       new Thread(
             () -> {
                try {
@@ -125,6 +126,6 @@ public class OyVey implements ModInitializer, ClientModInitializer {
          }
       }));
       long endTime = System.nanoTime();
-      LOGGER.info("Initialized {} in {}ms", "SRClient 2.0", (endTime - startTime) / 1000000.0);
+      LOGGER.info("Initialized {} in {}ms", BuildConfig.NAME, (endTime - startTime) / 1000000.0);
    }
 }

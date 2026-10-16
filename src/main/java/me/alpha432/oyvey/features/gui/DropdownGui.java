@@ -1,6 +1,7 @@
 package me.alpha432.oyvey.features.gui;
 
 import com.google.gson.GsonBuilder;
+import com.mojang.blaze3d.platform.InputConstants;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
 import java.awt.Color;
@@ -23,6 +24,7 @@ import me.alpha432.oyvey.features.script.LuaScriptSetting;
 import me.alpha432.oyvey.features.settings.Bind;
 import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.util.render.RenderUtil;
+import me.alpha432.oyvey.util.render.HudFont;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -37,15 +39,22 @@ import org.lwjgl.glfw.GLFW;
 public class DropdownGui extends Screen {
    private static DropdownGui INSTANCE;
    private static final Map<Module.Category, int[]> panelPos = new LinkedHashMap<>();
+   private static final Map<Module.Category, Integer> panelScroll = new LinkedHashMap<>();
+   private int layoutWidth;
+   private int layoutHeight;
+   private float layoutScale;
+   private int panelLimit;
    private static final Set<Module> expanded = new HashSet<>();
    private static final Set<LuaScript> expandedScripts = new HashSet<>();
    private static LuaScriptSetting scriptSlider = null;
    private static int scriptSliderX;
    private static int scriptSliderW;
-   private boolean scriptsOpen = false;
    private int scriptScroll = 0;
    private long openTime;
    private static final float OPEN_ANIM_MS = 300.0F;
+   private enum ToolPanel { CONFIGS, SCRIPTS }
+   private final Map<ToolPanel, int[]> toolPositions = new LinkedHashMap<>();
+   private ToolPanel draggingTool;
    private Module.Category dragging = null;
    private int dragOffX;
    private int dragOffY;
@@ -54,7 +63,6 @@ public class DropdownGui extends Screen {
    private static int sliderW;
    private Setting<?> captureBind = null;
    private Module captureBindModule = null;
-   private boolean configsOpen = false;
    private List<String> configList = new ArrayList<>();
    private String configSaveName = "";
    private boolean configTyping = false;
@@ -67,16 +75,16 @@ public class DropdownGui extends Screen {
    private static boolean cpDragSV;
    private static boolean cpDragH;
    private static boolean cpDragA;
-   private static final int PW = 110;
-   private static final int HDR = 14;
-   private static final int MH = 13;
-   private static final int SH = 11;
+   private static final int PW = 132;
+   private static final int HDR = 18;
+   private static final int MH = 18;
+   private static final int SH = 16;
    private static final int CB = 7;
    private static final int CP_SQ = 88;
    private static final int CP_BAR = 7;
-   private static final int C_HEADER = -267119584;
-   private static final int C_BODY = -267580136;
-   private static final int C_BORDER = -14934996;
+   private static final int C_HEADER = 0xF50D0E13;
+   private static final int C_BODY = 0xF2151924;
+   private static final int C_BORDER = 0xFF2A303D;
    private static final int C_SEP = -14803408;
    private static final int C_TEXT = -2236929;
    private static final int C_SUBTEXT = -8947798;
@@ -104,10 +112,11 @@ public class DropdownGui extends Screen {
    }
 
    protected void init() {
-      if (panelPos.isEmpty()) {
+      if (panelPos.isEmpty() || this.layoutWidth != this.width || this.layoutHeight != this.height) {
          this.initPositions();
       }
 
+      this.refreshConfigList();
       this.openTime = System.currentTimeMillis();
    }
 
@@ -132,22 +141,209 @@ public class DropdownGui extends Screen {
    }
 
    private void initPositions() {
-      int x = 4;
+      panelPos.clear();
+      panelScroll.clear();
+      this.toolPositions.clear();
+      this.layoutWidth = this.width;
+      this.layoutHeight = this.height;
+      float scale = this.guiScale();
+      this.layoutScale = scale;
+      int usableWidth = (int)((this.width - 24) / scale);
+      int usableHeight = (int)((this.height - 52) / scale);
+      int count = 8;
+      int columns = Math.max(1, Math.min(count, (usableWidth + 10) / (PW + 10)));
+      int rows = (count + columns - 1) / columns;
+      this.panelLimit = Math.max(HDR + MH, (usableHeight - (rows - 1) * 12) / rows);
+      int originX = (int)(this.width / 2.0F - (columns * (PW + 10) - 10) / 2.0F);
+      int originY = (int)(this.height / 2.0F - usableHeight / 2.0F);
+      Module.Category[] order = {Module.Category.COMBAT, Module.Category.MOVEMENT, Module.Category.RENDER,
+         Module.Category.PLAYER, Module.Category.MISC, Module.Category.GHOST, Module.Category.CLIENT, Module.Category.OLD};
+      for (int i = 0; i < order.length; i++) {
+         panelPos.put(order[i], new int[]{originX + (i % columns) * (PW + 10), originY + (i / columns) * (this.panelLimit + 12)});
+      }
+      List<int[]> occupied = new ArrayList<>();
+      for (Module.Category category : order) {
+         int[] position = panelPos.get(category);
+         occupied.add(new int[]{position[0], position[1], this.panelH(category)});
+      }
+      for (ToolPanel tool : ToolPanel.values()) {
+         if (tool == ToolPanel.SCRIPTS && OyVey.scriptManager == null) continue;
+         this.placeToolPanel(tool, occupied, originX, originY, columns, usableHeight);
+      }
+   }
 
-      for (Module.Category cat : Module.Category.values()) {
-         if (cat != Module.Category.HUD) {
-            panelPos.put(cat, new int[]{x, 4});
-            x += 114;
+   private void placeToolPanel(ToolPanel tool, List<int[]> occupied, int originX, int originY,
+                               int columns, int usableHeight) {
+      int minimum = HDR + (tool == ToolPanel.CONFIGS ? 22 : 18) + 12;
+      int[] best = null;
+      List<Integer> candidates = new ArrayList<>();
+      candidates.add(originY);
+      for (int[] rectangle : occupied) candidates.add(rectangle[1] + rectangle[2] + 12);
+      for (int column = 0; column < columns; column++) {
+         int x = originX + column * (PW + 10);
+         for (int y : candidates) {
+            int bottom = originY + usableHeight;
+            boolean blocked = false;
+            for (int[] rectangle : occupied) {
+               if (x >= rectangle[0] + PW || x + PW <= rectangle[0]) continue;
+               if (y < rectangle[1] + rectangle[2] + 12 && y + minimum > rectangle[1] - 12) {
+                  blocked = true;
+                  break;
+               }
+               if (rectangle[1] >= y) bottom = Math.min(bottom, rectangle[1] - 12);
+            }
+            int height = Math.min(this.panelLimit, bottom - y);
+            if (!blocked && height >= minimum && (best == null || height > best[2])) {
+               best = new int[]{x, y, height};
+            }
          }
       }
+      if (best == null) {
+         int offset = (tool.ordinal() + 1) * 16;
+         best = new int[]{originX + (columns - 1) * (PW + 10) - offset, originY + offset,
+            Math.max(minimum, this.panelLimit)};
+      }
+      this.toolPositions.put(tool, best);
+      occupied.add(best);
+   }
+   private float guiScale() {
+      ClickGuiModule module = ClickGuiModule.getInstance();
+      float requested = module == null ? 1.0F : module.guiScale.getValue();
+      float fit = Math.min((this.width - 24.0F) / (3 * (PW + 10) - 10), (this.height - 52.0F) / 250.0F);
+      return Math.max(0.25F, Math.min(requested, fit));
+   }
+
+   private static void guiText(GuiGraphicsExtractor ctx, String text, int x, int y, int color, boolean shadow) {
+      ctx.text(Minecraft.getInstance().font, HudFont.ARIAL.text(text), x, y, color, shadow);
+   }
+
+   private static int guiWidth(String text) {
+      return Minecraft.getInstance().font.width(HudFont.ARIAL.text(text));
+   }
+
+   private static List<String> wrapText(String text, int width) {
+      List<String> lines = new ArrayList<>();
+      while (!text.isEmpty()) {
+         int end = 0;
+         while (end < text.length()) {
+            int next = text.offsetByCodePoints(end, 1);
+            if (end > 0 && guiWidth(text.substring(0, next)) > width) {
+               break;
+            }
+            end = next;
+         }
+         if (end < text.length()) {
+            int space = text.lastIndexOf(' ', end);
+            if (space > 0) {
+               end = space;
+            }
+         }
+         lines.add(text.substring(0, end));
+         text = text.substring(end).stripLeading();
+      }
+      return lines.isEmpty() ? List.of("") : lines;
+   }
+
+   private record TextRow(List<String> label, List<String> value, boolean stacked) {
+      int height() {
+         return 6 + 12 * (this.label.size() + (this.stacked ? this.value.size() : 0));
+      }
+   }
+
+   private static TextRow textRow(String label, String value, int width) {
+      boolean stacked = !value.isEmpty() && guiWidth(label) + 10 + guiWidth(value) > width;
+      return new TextRow(wrapText(label, width), wrapText(value, width), stacked);
+   }
+
+   private static void drawTextRow(GuiGraphicsExtractor ctx, TextRow row, int x, int y, int right, int valueColor) {
+      for (int i = 0; i < row.label.size(); i++) {
+         guiText(ctx, row.label.get(i), x, y + 3 + i * 12, 0xFFD8DAE1, false);
+      }
+      for (int i = 0; i < row.value.size(); i++) {
+         String value = row.value.get(i);
+         int valueY = row.stacked ? y + 3 + (row.label.size() + i) * 12 : y + 3;
+         guiText(ctx, value, row.stacked ? x : right - guiWidth(value), valueY, valueColor, false);
+      }
+   }
+
+   private String bindLabel(Bind bind) {
+      if (bind.getKey() < 0) {
+         return bind.isEmpty() ? ClickGuiModule.t("None") : bind.toString();
+      }
+      return InputConstants.getKey(new KeyEvent(bind.getKey(), 0, 0)).getDisplayName().getString();
+   }
+
+   private String settingValue(Setting<?> setting) {
+      if (setting.isEnumSetting()) {
+         return setting.currentEnumName();
+      }
+      if (setting.getValue() instanceof Bind bind) {
+         return setting == this.captureBind ? ClickGuiModule.t("Press key...") : this.bindLabel(bind);
+      }
+      if (setting.getValue() instanceof Number number) {
+         return number instanceof Integer ? number.toString()
+            : String.format(java.util.Locale.ROOT, "%.4f", number.doubleValue()).replaceAll("0+$", "").replaceAll("\\.$", "");
+      }
+      return setting.getValue() instanceof Boolean || setting.isColorSetting() ? "" : String.valueOf(setting.getValue());
+   }
+
+   private TextRow settingText(Setting<?> setting) {
+      int reserved = setting.getValue() instanceof Boolean || setting.isColorSetting() ? 32 : 14;
+      return textRow(setting.getName(), this.settingValue(setting), PW - reserved);
+   }
+
+   private int settingH(Setting<?> setting) {
+      return this.settingText(setting).height() + (setting.isNumberSetting() && setting.hasRestriction() ? 4 : 0);
+   }
+
+   private int moduleH(Module module) {
+      return 6 + 12 * wrapText(moduleLabel(module), PW - 24).size();
+   }
+
+   private TextRow bindText(Module module) {
+      String value = module == this.captureBindModule ? ClickGuiModule.t("Press key...") : this.bindLabel(module.getBind());
+      return textRow(ClickGuiModule.t("Bind"), value, PW - 14);
+   }
+
+   private int bindH(Module module) {
+      return this.bindText(module).height();
+   }
+
+   private static String moduleLabel(Module module) {
+      return module.getDisplayName().replaceAll("([a-z0-9])([A-Z])", "$1 $2");
+   }
+
+   private static void chevron(GuiGraphicsExtractor ctx, int x, int y, boolean open, int color) {
+      // Tiny thin 'v' exactly like reference
+      for (int i = 0; i < 3; i++) {
+         int off = open ? 2 - i : i;
+         ctx.fill(x + i, y + off, x + i + 1, y + off + 1, color);
+         ctx.fill(x + 4 - i, y + off, x + 5 - i, y + off + 1, color);
+      }
+   }
+
+   private static String categoryIcon(Module.Category cat) {
+      return switch (cat) {
+         case COMBAT -> "\u25CE";
+         case MOVEMENT -> "\u21AF";
+         case RENDER -> "\u25C9";
+         case PLAYER -> "\u25CB";
+         case MISC -> "\u2699";
+         case GHOST -> "\u2726";
+         case CLIENT -> "\u2630";
+         case OLD -> "\u2022";
+         default -> "\u25CB";
+      };
    }
 
    public void extractBackground(GuiGraphicsExtractor ctx, int mx, int my, float delta) {
    }
 
    public void extractRenderState(GuiGraphicsExtractor ctx, int mx, int my, float delta) {
-      ClickGuiModule cgm = ClickGuiModule.getInstance();
-      float scale = cgm != null ? cgm.guiScale.getValue() : 1.0F;
+      float scale = this.guiScale();
+      if (this.layoutScale != scale) {
+         this.initPositions();
+      }
       int cx = this.width / 2;
       int cy = this.height / 2;
       int smx = (int)((mx - cx) / scale + cx);
@@ -181,9 +377,19 @@ public class DropdownGui extends Screen {
          }
       }
 
+      if (this.draggingTool != null) {
+         if (GLFW.glfwGetMouseButton(Minecraft.getInstance().getWindow().handle(), 0) == 1) {
+            int[] position = this.toolPositions.get(this.draggingTool);
+            position[0] = smx - this.dragOffX;
+            position[1] = smy - this.dragOffY;
+         } else {
+            this.draggingTool = null;
+         }
+      }
+
       float openT = this.openAnim();
       float animScale = easeOutBack(openT);
-      int dimAlpha = (int)(85.0F * openT);
+      int dimAlpha = (int)(205.0F * openT);
       ctx.fill(0, 0, this.width, this.height, dimAlpha << 24);
       ctx.pose().pushMatrix();
       ctx.pose().translate(cx, cy);
@@ -194,17 +400,12 @@ public class DropdownGui extends Screen {
          this.renderPanel(ctx, smx, smy, cat);
       }
 
+      this.renderConfigsMenu(ctx, smx, smy);
+      if (OyVey.scriptManager != null) {
+         this.renderScriptsMenu(ctx, smx, smy);
+      }
       if (colorPicker != null) {
          this.renderColorPicker(ctx, smx, smy);
-      }
-
-      this.renderBottomBar(ctx, smx, smy);
-      if (this.configsOpen) {
-         this.renderConfigsMenu(ctx, smx, smy);
-      }
-
-      if (this.scriptsOpen && OyVey.scriptManager != null) {
-         this.renderScriptsMenu(ctx, smx, smy);
       }
 
       ctx.pose().popMatrix();
@@ -214,122 +415,85 @@ public class DropdownGui extends Screen {
       int[] pos = panelPos.get(cat);
       int px = pos[0];
       int py = pos[1];
-      int totH = this.panelH(cat);
-      int R = 4;
-      RenderUtil.roundedRect(ctx, px + 2, py + 3, 110, totH, R, 1426063360);
-      RenderUtil.roundedRect(ctx, px - 1, py - 1, 112, totH + 2, R + 1, -14934996);
-      RenderUtil.roundedRect(ctx, px, py, 110, totH, R, -267580136);
-      RenderUtil.roundedRect(ctx, px, py, 110, 14, R, -267119584);
-      ctx.fill(px, py + R, px + 110, py + 14, -267119584);
-      ctx.fill(px + R, py + 1, px + 110 - R, py + 2, 587202559);
-      int acc = OyVey.colorManager.getColorWithAlpha(py, 220);
-      ctx.fill(px + R, py + 14 - 2, px + 110 - R, py + 14, acc);
-      String label = ClickGuiModule.t(cat.getName());
-      int lw = Minecraft.getInstance().font.width(label);
-      ctx.text(Minecraft.getInstance().font, label, px + (110 - lw) / 2, py + 3 + 1, -1, false);
-      int ey = py + 14;
-
+      int height = this.panelH(cat);
+      int scroll = this.clampPanelScroll(cat);
+      // Screenshot style: soft shadow + dark body + near-black header + thin border
+      RenderUtil.roundedRect(ctx, px + 1, py + 3, PW, height, PANEL_R, 0x55000000);
+      RenderUtil.roundedRect(ctx, px, py, PW, height, PANEL_R, C_BODY);
+      RenderUtil.roundedRect(ctx, px, py, PW, HDR, PANEL_R, C_HEADER);
+      ctx.fill(px, py + HDR - PANEL_R, px + PW, py + HDR, C_HEADER);
+      guiText(ctx, ClickGuiModule.t(cat.getName()), px + 6, py + 5, 0xFFF2F4F7, false);
+      String catIcon = categoryIcon(cat);
+      guiText(ctx, catIcon, px + PW - guiWidth(catIcon) - 7, py + 5, 0xFFB9C0CC, false);
+      ctx.enableScissor(px, py + HDR, px + PW, py + height);
+      int ey = py + HDR - scroll;
+      int clippedMouseY = my >= py + HDR && my < py + height ? my : Integer.MIN_VALUE;
       for (Module mod : this.modsOf(cat)) {
-         this.renderModuleRow(ctx, mx, my, mod, px, ey);
-         ey += 13;
+         this.renderModuleRow(ctx, mx, clippedMouseY, mod, px, ey);
+         ey += this.moduleH(mod);
          if (expanded.contains(mod)) {
-            this.renderBindRow(ctx, mx, my, mod, px, ey);
-            ey += 11;
-
-            for (Setting<?> s : this.visibleSettings(mod)) {
-               this.renderSettingRow(ctx, mx, my, s, px, ey);
-               ey += 11;
+            this.renderBindRow(ctx, mx, clippedMouseY, mod, px, ey);
+            ey += this.bindH(mod);
+            for (Setting<?> setting : this.visibleSettings(mod)) {
+               this.renderSettingRow(ctx, mx, clippedMouseY, setting, px, ey);
+               ey += this.settingH(setting);
             }
          }
       }
-
-      RenderUtil.maskCorners(ctx, px, py, 110, totH, R, -14934996, false, false, true, true);
+      ctx.disableScissor();
+      RenderUtil.maskCorners(ctx, px, py, PW, height, PANEL_R, C_BORDER, false, false, true, true);
+      RenderUtil.roundedOutline(ctx, px, py, PW, height, PANEL_R, 1.0F, C_BORDER);
+      if (this.contentH(cat) > height) {
+         int body = height - HDR;
+         int thumb = Math.max(10, body * body / (this.contentH(cat) - HDR));
+         int offset = scroll * (body - thumb) / (this.contentH(cat) - height);
+         ctx.fill(px + PW - 2, py + HDR + offset, px + PW - 1, py + HDR + offset + thumb, 0x887EACBD);
+      }
    }
 
    private void renderModuleRow(GuiGraphicsExtractor ctx, int mx, int my, Module mod, int px, int ey) {
-      boolean on = mod.isEnabled();
-      boolean hov = mx >= px && mx <= px + 110 && my >= ey && my <= ey + 13;
-      if (hov) {
-         ctx.fill(px, ey, px + 110, ey + 13, 548055807);
+      int height = this.moduleH(mod);
+      boolean hover = mx >= px && mx < px + PW && my >= ey && my < ey + height;
+      if (mod.isEnabled()) {
+         // Reference teal -> blue highlight, full-bleed like screenshot
+         RenderUtil.horizontalGradient(ctx, px, ey, px + PW, ey + height,
+            new Color(74, 157, 174, 238), new Color(44, 108, 169, 238));
       }
-
-      ctx.text(Minecraft.getInstance().font, mod.getDisplayName(), px + 4, ey + 2 + 1, -2236929, false);
-      int cbX = px + 110 - 7 - 4;
-      int cbY = ey + 3;
-      drawCheckbox(ctx, cbX, cbY, on, ey);
-      if (!this.visibleSettings(mod).isEmpty()) {
-         boolean exp = expanded.contains(mod);
-         String g = exp ? "v" : ">";
-         ctx.text(Minecraft.getInstance().font, g, cbX - Minecraft.getInstance().font.width(g) - 3, ey + 2 + 1, on ? -7829368 : -12303292, false);
+      if (hover) {
+         ctx.fill(px, ey, px + PW, ey + height, 0x18FFFFFF);
       }
-
-      ctx.fill(px + 2, ey + 13 - 1, px + 110 - 2, ey + 13, -14803408);
+      List<String> lines = wrapText(moduleLabel(mod), PW - 24);
+      for (int i = 0; i < lines.size(); i++) {
+         guiText(ctx, lines.get(i), px + 6, ey + 3 + i * 12, mod.isEnabled() ? 0xFFF4F8FB : 0xFFAEB6C2, false);
+      }
+      chevron(ctx, px + PW - 12, ey + 7, expanded.contains(mod), mod.isEnabled() ? 0xFFEAF4F7 : 0xFF7E8694);
    }
 
-   private void renderSettingRow(GuiGraphicsExtractor ctx, int mx, int my, Setting<?> s, int px, int ey) {
-      boolean hov = mx >= px && mx <= px + 110 && my >= ey && my <= ey + 11;
-      ctx.fill(px, ey, px + 110, ey + 11, hov ? 548055807 : -871888881);
-      ctx.fill(px + 3, ey, px + 4, ey + 11, 872415231);
-      String name = s.getName();
-      int maxW;
-      if (s.isEnumSetting()) {
-         int evW = Minecraft.getInstance().font.width(s.currentEnumName());
-         maxW = Math.max(18, 110 - evW - 15);
-      } else {
-         maxW = 51;
+   private void renderSettingRow(GuiGraphicsExtractor ctx, int mx, int my, Setting<?> setting, int px, int ey) {
+      int height = this.settingH(setting);
+      boolean hover = mx >= px && mx < px + PW && my >= ey && my < ey + height;
+      ctx.fill(px, ey, px + PW, ey + height, hover ? 0xFF1B2831 : 0xF013151D);
+      ctx.fill(px + 3, ey, px + 4, ey + height, 0xFF4A9DAE);
+      int right = px + PW - 7;
+      drawTextRow(ctx, this.settingText(setting), px + 7, ey, right, 0xFF80BDD8);
+      if (setting.getValue() instanceof Boolean value) {
+         drawCheckbox(ctx, right - 7, ey + 5, value, ey);
+      } else if (setting.isNumberSetting() && setting.hasRestriction()) {
+         double min = ((Number)setting.getMin()).doubleValue();
+         double max = ((Number)setting.getMax()).doubleValue();
+         double value = ((Number)setting.getValue()).doubleValue();
+         float fraction = max <= min ? 0 : (float)Math.max(0, Math.min(1, (value - min) / (max - min)));
+         int start = px + 4;
+         int width = PW - 8;
+         int barY = ey + height - 3;
+         ctx.fill(start, barY, start + width, barY + 2, 0x334A6170);
+         ctx.fill(start, barY, start + Math.round(width * fraction), barY + 2, acc(ey, 220));
+      } else if (setting.isColorSetting()) {
+         Color color = (Color)setting.getValue();
+         ctx.fill(right - 11, ey + 4, right + 1, ey + 13, 0xFF808080);
+         ctx.fill(right - 10, ey + 5, right, ey + 12, color.getRGB());
       }
-
-      while (name.length() > 3 && Minecraft.getInstance().font.width(name) > maxW) {
-         name = name.substring(0, name.length() - 2) + ".";
-      }
-
-      ctx.text(Minecraft.getInstance().font, name, px + 7, ey + 1 + 1, -4473925, false);
-      int re = px + 110 - 4;
-      if (s.getValue() instanceof Boolean bool) {
-         int cbX = re - 7;
-         int cbY = ey + 2;
-         drawCheckbox(ctx, cbX, cbY, bool, ey);
-      } else if (s.isNumberSetting() && s.hasRestriction()) {
-         float min = ((Number)s.getMin()).floatValue();
-         float max = ((Number)s.getMax()).floatValue();
-         float val = ((Number)s.getValue()).floatValue();
-         float pct = Math.max(0.0F, Math.min(1.0F, (val - min) / (max - min)));
-         String vs = s.getValue() instanceof Integer ? String.valueOf((int)val) : String.format("%.1f", val);
-         ctx.text(Minecraft.getInstance().font, vs, re - Minecraft.getInstance().font.width(vs), ey + 1 + 1, -8947798, false);
-         int bx = px + 4;
-         int bw = 102;
-         int by = ey + 11 - 2;
-         ctx.fill(bx, by, bx + bw, by + 2, 872415231);
-         ctx.fill(bx, by, bx + (int)(bw * pct), by + 2, acc(ey, 200));
-         if (hov || s == sliderDrag) {
-            int kx = bx + (int)(bw * pct);
-            ctx.fill(kx - 1, by - 1, kx + 2, by + 3, -1);
-         }
-      } else if (s.isEnumSetting()) {
-         String ev = s.currentEnumName();
-         ctx.text(Minecraft.getInstance().font, ev, re - Minecraft.getInstance().font.width(ev), ey + 1 + 1, -11171670, false);
-      } else if (s.getValue() instanceof Bind bind) {
-         boolean cap = s == this.captureBind;
-         String bs = cap ? "..." : bind.toString();
-         ctx.text(Minecraft.getInstance().font, bs, re - Minecraft.getInstance().font.width(bs), ey + 1 + 1, cap ? acc(ey, 255) : -11180425, false);
-      } else if (s.isColorSetting()) {
-         Color c = (Color)s.getValue();
-         int sw = 10;
-         int sh2 = 7;
-         int sx = re - sw;
-         int sy = ey + 2;
-         ctx.fill(sx, sy, sx + sw / 2, sy + sh2 / 2, -5592406);
-         ctx.fill(sx + sw / 2, sy, sx + sw, sy + sh2 / 2, -10066330);
-         ctx.fill(sx, sy + sh2 / 2, sx + sw / 2, sy + sh2, -10066330);
-         ctx.fill(sx + sw / 2, sy + sh2 / 2, sx + sw, sy + sh2, -5592406);
-         ctx.fill(sx, sy, sx + sw, sy + sh2, c.getRGB());
-         ctx.fill(sx - 1, sy - 1, sx + sw + 1, sy, 1627389951);
-         ctx.fill(sx - 1, sy + sh2, sx + sw + 1, sy + sh2 + 1, 1627389951);
-         ctx.fill(sx - 1, sy, sx, sy + sh2, 1627389951);
-         ctx.fill(sx + sw, sy, sx + sw + 1, sy + sh2, 1627389951);
-      }
-
-      ctx.fill(px + 4, ey + 11 - 1, px + 110 - 4, ey + 11, 419430399);
+      ctx.fill(px + 4, ey + height - 1, px + PW - 4, ey + height, 0x182A3540);
    }
 
    private void renderColorPicker(GuiGraphicsExtractor ctx, int mx, int my) {
@@ -393,19 +557,10 @@ public class DropdownGui extends Screen {
    }
 
    public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
-      ClickGuiModule cgm = ClickGuiModule.getInstance();
-      float sc = cgm != null ? cgm.guiScale.getValue() : 1.0F;
+      float sc = this.guiScale();
       int mx = (int)((click.x() - this.width / 2.0) / sc + this.width / 2.0);
       int my = (int)((click.y() - this.height / 2.0) / sc + this.height / 2.0);
       int btn = click.button();
-      if (this.scriptsOpen) {
-         return this.clickScriptsMenu(mx, my, btn);
-      }
-
-      if (this.configsOpen) {
-         return this.clickConfigsMenu(mx, my, btn);
-      }
-
       if (colorPicker != null) {
          int bx = cpX;
          int by = cpY;
@@ -441,22 +596,46 @@ public class DropdownGui extends Screen {
          }
       }
 
+      for (ToolPanel tool : this.toolPositions.keySet()) {
+         int[] geometry = this.toolGeometry(tool);
+         if (!this.inToolPanel(mx, my, geometry)) continue;
+         if (my < geometry[1] + HDR) {
+            this.configTyping = false;
+            if (btn == 0) {
+               this.dragging = null;
+               this.draggingTool = tool;
+               this.dragOffX = mx - geometry[0];
+               this.dragOffY = my - geometry[1];
+            }
+            return true;
+         }
+         if (tool != ToolPanel.CONFIGS) this.configTyping = false;
+         return tool == ToolPanel.CONFIGS ? this.clickConfigsMenu(mx, my, btn) : this.clickScriptsMenu(mx, my, btn);
+      }
+      this.configTyping = false;
+
       for (Module.Category cat : panelPos.keySet()) {
          int[] pos = panelPos.get(cat);
          int px = pos[0];
          int py = pos[1];
-         if (btn == 0 && mx >= px && mx <= px + 110 && my >= py && my <= py + 14) {
+         if (btn == 0 && mx >= px && mx <= px + PW && my >= py && my <= py + HDR) {
+            this.draggingTool = null;
             this.dragging = cat;
             this.dragOffX = mx - px;
             this.dragOffY = my - py;
             return true;
          }
 
-         int ey = py + 14;
+         if (my < py + HDR || my >= py + this.panelH(cat)) {
+            continue;
+         }
+         int ey = py + HDR - this.clampPanelScroll(cat);
 
          for (Module mod : this.modsOf(cat)) {
-            if (mx >= px && mx <= px + 110 && my >= ey && my <= ey + 13) {
-               if (btn == 0) {
+            if (mx >= px && mx <= px + PW && my >= ey && my <= ey + this.moduleH(mod)) {
+               if (btn == 0 && mx >= px + PW - 18) {
+                  this.toggleExpand(mod);
+               } else if (btn == 0) {
                   mod.toggle();
                } else if (btn == 1) {
                   this.toggleExpand(mod);
@@ -465,9 +644,9 @@ public class DropdownGui extends Screen {
                return true;
             }
 
-            ey += 13;
+            ey += this.moduleH(mod);
             if (expanded.contains(mod)) {
-               if (mx >= px && mx <= px + 110 && my >= ey && my <= ey + 11) {
+               if (mx >= px && mx <= px + PW && my >= ey && my <= ey + this.bindH(mod)) {
                   if (btn == 1) {
                      mod.setBind(-1);
                      this.captureBindModule = null;
@@ -479,65 +658,25 @@ public class DropdownGui extends Screen {
                   return true;
                }
 
-               ey += 11;
+               ey += this.bindH(mod);
 
                for (Setting<?> s : this.visibleSettings(mod)) {
-                  if (mx >= px && mx <= px + 110 && my >= ey && my <= ey + 11) {
+                  if (mx >= px && mx <= px + PW && my >= ey && my <= ey + this.settingH(s)) {
                      this.handleSetting(s, mx, ey, px, btn);
                      return true;
                   }
 
-                  ey += 11;
+                  ey += this.settingH(s);
                }
             }
          }
       }
 
-      int barY = this.height - 20;
-      int scrBtnX = 72;
-      if (OyVey.scriptManager != null && mx >= scrBtnX && mx <= scrBtnX + 64 && my >= barY && my <= barY + 16) {
-         this.openScripts();
-         return true;
-      } else if (mx >= 4 && mx <= 68 && my >= barY && my <= barY + 16) {
-         this.openConfigs();
-         return true;
-      } else {
-         return super.mouseClicked(click, doubled);
-      }
-   }
-
-   private void openScripts() {
-      this.scriptsOpen = true;
-      this.configsOpen = false;
-      this.configTyping = false;
-      this.scriptScroll = 0;
-   }
-
-   private void openConfigs() {
-      this.configsOpen = true;
-      this.scriptsOpen = false;
-      this.refreshConfigList();
-      this.configScroll = 0;
+      return super.mouseClicked(click, doubled);
    }
 
    private boolean clickScriptsMenu(int mx, int my, int btn) {
-      int barY = this.height - 20;
-      int scrBtnX = 72;
-      if (mx >= scrBtnX && mx <= scrBtnX + 64 && my >= barY && my <= barY + 16) {
-         this.scriptsOpen = false;
-         return true;
-      }
-
-      if (mx >= 4 && mx <= 68 && my >= barY && my <= barY + 16) {
-         this.openConfigs();
-         return true;
-      }
-
-      if (OyVey.scriptManager == null) {
-         this.scriptsOpen = false;
-         return true;
-      }
-
+      if (OyVey.scriptManager == null) return false;
       int[] g = this.scriptsMenuGeom();
       int px = g[0];
       int py = g[1];
@@ -546,14 +685,14 @@ public class DropdownGui extends Screen {
       int listH = g[4];
       int footerY = g[6];
       int footerH = g[7];
-      if (mx >= px && mx <= px + 132 && my >= footerY && my <= footerY + footerH) {
+      if (mx >= px && mx <= px + PW && my >= footerY && my <= footerY + footerH) {
          OyVey.scriptManager.reload();
          expandedScripts.clear();
          this.scriptScroll = 0;
          return true;
       }
 
-      if (mx >= px && mx <= px + 132 && my >= listTop && my < listTop + listH) {
+      if (mx >= px && mx <= px + PW && my >= listTop && my < listTop + listH) {
          int ey = listTop - this.scriptScroll;
 
          for (LuaScript s : OyVey.scriptManager.getScripts()) {
@@ -584,7 +723,7 @@ public class DropdownGui extends Screen {
                      } else if (ss.getType() == LuaScriptSetting.Type.SLIDER) {
                         scriptSlider = ss;
                         scriptSliderX = px + 4;
-                        scriptSliderW = 124;
+                        scriptSliderW = PW - 8;
                         this.applyScriptSlider(mx);
                      } else if (ss.getType() == LuaScriptSetting.Type.ENUM) {
                         ss.cycleEnum();
@@ -600,29 +739,15 @@ public class DropdownGui extends Screen {
 
          return true;
       } else {
-         if (mx >= px && mx <= px + 132 && my >= py && my <= py + menuH) {
+         if (mx >= px && mx <= px + PW && my >= py && my <= py + menuH) {
             return true;
          }
 
-         this.scriptsOpen = false;
          return true;
       }
    }
 
    private boolean clickConfigsMenu(int mx, int my, int btn) {
-      int barY = this.height - 20;
-      int scrBtnX = 72;
-      if (mx >= 4 && mx <= 68 && my >= barY && my <= barY + 16) {
-         this.configsOpen = false;
-         this.configTyping = false;
-         return true;
-      }
-
-      if (OyVey.scriptManager != null && mx >= scrBtnX && mx <= scrBtnX + 64 && my >= barY && my <= barY + 16) {
-         this.openScripts();
-         return true;
-      }
-
       int[] g = this.configsMenuGeom();
       int px = g[0];
       int py = g[1];
@@ -631,32 +756,32 @@ public class DropdownGui extends Screen {
       int listH = g[4];
       int footerY = g[6];
       int footerH = g[7];
-      if (mx >= px && mx <= px + 132 && my >= listTop && my < listTop + listH) {
+      if (mx >= px && mx <= px + PW && my >= listTop && my < listTop + listH) {
          if (!this.configList.isEmpty()) {
             int ey = listTop - this.configScroll;
 
             for (String cfg : this.configList) {
-               if (my >= ey && my < ey + 16) {
+               if (my >= ey && my < ey + this.configRowH(cfg)) {
                   this.loadConfig(cfg);
-                  this.configsOpen = false;
+
                   this.configTyping = false;
                   return true;
                }
 
-               ey += 16;
+               ey += this.configRowH(cfg);
             }
          }
 
          return true;
       } else {
-         int inputW = 88;
+         int inputW = PW - 44;
          if (mx >= px + 4 && mx <= px + inputW && my >= footerY + 3 && my <= footerY + footerH - 3) {
             this.configTyping = true;
             return true;
          }
 
          int saveBtnX = px + inputW + 2;
-         if (mx >= saveBtnX && mx <= px + 132 - 4 && my >= footerY + 3 && my <= footerY + footerH - 3) {
+         if (mx >= saveBtnX && mx <= px + PW - 4 && my >= footerY + 3 && my <= footerY + footerH - 3) {
             if (!this.configSaveName.isBlank()) {
                this.saveConfig(this.configSaveName.trim());
                this.configSaveName = "";
@@ -666,11 +791,10 @@ public class DropdownGui extends Screen {
 
             return true;
          } else {
-            if (mx >= px && mx <= px + 132 && my >= py && my <= py + menuH) {
+            if (mx >= px && mx <= px + PW && my >= py && my <= py + menuH) {
                return true;
             }
 
-            this.configsOpen = false;
             this.configTyping = false;
             return true;
          }
@@ -682,7 +806,7 @@ public class DropdownGui extends Screen {
          ((Setting<Boolean>)s).setValue(!(Boolean)s.getValue());
       } else if (s.isNumberSetting() && s.hasRestriction()) {
          int bx = px + 4;
-         int bw = 102;
+         int bw = PW - 8;
          if (mx >= bx - 3 && mx <= bx + bw + 3) {
             sliderDrag = s;
             sliderX = bx;
@@ -707,8 +831,8 @@ public class DropdownGui extends Screen {
          colorPicker = (Setting<Color>)s;
          Color c = (Color)s.getValue();
          cpHsb = Color.RGBtoHSB(c.getRed(), c.getGreen(), c.getBlue(), null);
-         int rightEdge = px + 110 + 6 + 88 + 8;
-         cpX = rightEdge > this.width ? px - 88 - 10 : px + 110 + 6;
+         int rightEdge = px + PW + 6 + 88 + 8;
+         cpX = rightEdge > this.width ? px - 88 - 10 : px + PW + 6;
          cpY = ey;
       }
    }
@@ -716,6 +840,7 @@ public class DropdownGui extends Screen {
    public boolean mouseReleased(MouseButtonEvent click) {
       if (click.button() == 0) {
          this.dragging = null;
+         this.draggingTool = null;
          sliderDrag = null;
          scriptSlider = null;
          cpDragA = false;
@@ -727,19 +852,30 @@ public class DropdownGui extends Screen {
    }
 
    public boolean mouseScrolled(double mx, double my, double hAmt, double vAmt) {
-      if (this.scriptsOpen) {
-         int[] g = this.scriptsMenuGeom();
-         int maxScroll = Math.max(0, g[5] - g[4]);
-         this.scriptScroll = Math.max(0, Math.min(maxScroll, this.scriptScroll - (int)Math.signum(vAmt) * 13));
-         return true;
-      } else if (this.configsOpen) {
-         int[] g = this.configsMenuGeom();
-         int maxScroll = Math.max(0, g[5] - g[4]);
-         this.configScroll = Math.max(0, Math.min(maxScroll, this.configScroll - (int)Math.signum(vAmt) * 16));
-         return true;
-      } else {
-         return super.mouseScrolled(mx, my, hAmt, vAmt);
+      float scale = this.guiScale();
+      int x = (int)((mx - this.width / 2.0) / scale + this.width / 2.0);
+      int y = (int)((my - this.height / 2.0) / scale + this.height / 2.0);
+      for (ToolPanel tool : this.toolPositions.keySet()) {
+         int[] geometry = this.toolGeometry(tool);
+         if (this.inToolPanel(x, y, geometry)) {
+            int max = Math.max(0, geometry[5] - geometry[4]);
+            if (tool == ToolPanel.CONFIGS) {
+               this.configScroll = Math.max(0, Math.min(max, this.configScroll - (int)(vAmt * 32)));
+            } else {
+               this.scriptScroll = Math.max(0, Math.min(max, this.scriptScroll - (int)(vAmt * 26)));
+            }
+            return true;
+         }
       }
+      for (Module.Category category : panelPos.keySet()) {
+         int[] pos = panelPos.get(category);
+         if (x >= pos[0] && x < pos[0] + PW && y >= pos[1] && y < pos[1] + this.panelH(category)) {
+            panelScroll.put(category, this.clampPanelScroll(category) - (int)(vAmt * MH * 2));
+            this.clampPanelScroll(category);
+            return true;
+         }
+      }
+      return super.mouseScrolled(mx, my, hAmt, vAmt);
    }
 
    public boolean keyPressed(KeyEvent input) {
@@ -778,13 +914,6 @@ public class DropdownGui extends Screen {
          if (key == 256) {
             if (colorPicker != null) {
                colorPicker = null;
-               return true;
-            } else if (this.configsOpen) {
-               this.configsOpen = false;
-               this.configTyping = false;
-               return true;
-            } else if (this.scriptsOpen) {
-               this.scriptsOpen = false;
                return true;
             } else {
                this.onClose();
@@ -831,17 +960,28 @@ public class DropdownGui extends Screen {
          .collect(Collectors.toList());
    }
 
-   private int panelH(Module.Category cat) {
-      int h = 14;
-
-      for (Module mod : this.modsOf(cat)) {
-         h += 13;
-         if (expanded.contains(mod)) {
-            h += (1 + this.visibleSettings(mod).size()) * 11;
+   private int contentH(Module.Category cat) {
+      int height = HDR;
+      for (Module module : this.modsOf(cat)) {
+         height += this.moduleH(module);
+         if (expanded.contains(module)) {
+            height += this.bindH(module);
+            for (Setting<?> setting : this.visibleSettings(module)) {
+               height += this.settingH(setting);
+            }
          }
       }
+      return height;
+   }
 
-      return h;
+   private int panelH(Module.Category cat) {
+      return Math.min(this.contentH(cat), this.panelLimit);
+   }
+
+   private int clampPanelScroll(Module.Category cat) {
+      int value = Math.max(0, Math.min(panelScroll.getOrDefault(cat, 0), this.contentH(cat) - this.panelH(cat)));
+      panelScroll.put(cat, value);
+      return value;
    }
 
    private void toggleExpand(Module mod) {
@@ -879,15 +1019,11 @@ public class DropdownGui extends Screen {
    }
 
    private void renderBindRow(GuiGraphicsExtractor ctx, int mx, int my, Module mod, int px, int ey) {
-      boolean hov = mx >= px && mx <= px + 110 && my >= ey && my <= ey + 11;
-      boolean cap = mod == this.captureBindModule;
-      ctx.fill(px, ey, px + 110, ey + 11, hov ? 548055807 : -1442182636);
-      ctx.fill(px + 3, ey, px + 4, ey + 11, 1442840575);
-      ctx.text(Minecraft.getInstance().font, ClickGuiModule.t("Bind"), px + 7, ey + 1 + 1, -3355444, false);
-      String label = cap ? ClickGuiModule.t("Press key...") : (mod.getBind().isEmpty() ? ClickGuiModule.t("None") : mod.getBind().toString());
-      int col = cap ? acc(ey, 255) : -11176039;
-      ctx.text(Minecraft.getInstance().font, label, px + 110 - Minecraft.getInstance().font.width(label) - 4, ey + 1 + 1, col, cap);
-      ctx.fill(px + 4, ey + 11 - 1, px + 110 - 4, ey + 11, 419430399);
+      int height = this.bindH(mod);
+      boolean hover = mx >= px && mx < px + PW && my >= ey && my < ey + height;
+      ctx.fill(px, ey, px + PW, ey + height, hover ? 0xFF1A2730 : 0xF0121319);
+      drawTextRow(ctx, this.bindText(mod), px + 7, ey, px + PW - 7,
+         mod == this.captureBindModule ? 0xFFB1E4F6 : 0xFF80BDD8);
    }
 
    private int scriptsContentH() {
@@ -903,63 +1039,48 @@ public class DropdownGui extends Screen {
       return Math.max(h, 12);
    }
 
-   private int configsContentH() {
-      return this.configList.isEmpty() ? 14 : this.configList.size() * 16;
+   private int configRowH(String name) {
+      return 6 + 12 * wrapText(name, PW - 12).size();
    }
 
-   private int[] menuGeom(int anchorX, int contentH, int footerH) {
-      int barY = this.height - 20;
-      int maxTotalH = barY - 4 - 4;
-      int maxListH = Math.max(11, maxTotalH - 16 - footerH);
-      int listH = Math.min(contentH, maxListH);
-      int menuH = 16 + listH + footerH;
-      int py = barY - 4 - menuH;
-      if (py < 4) {
-         py = 4;
-      }
+   private int configsContentH() {
+      return this.configList.isEmpty() ? 18 : this.configList.stream().mapToInt(this::configRowH).sum();
+   }
 
-      int px = anchorX;
-      if (px + 132 > this.width - 2) {
-         px = this.width - 2 - 132;
-      }
-
-      if (px < 2) {
-         px = 2;
-      }
-
-      int listTop = py + 16;
+   private int[] menuGeom(ToolPanel tool, int contentH, int footerH) {
+      int[] position = this.toolPositions.get(tool);
+      int listH = Math.min(contentH, Math.max(12, position[2] - HDR - footerH));
+      int listTop = position[1] + HDR;
       int footerY = listTop + listH;
-      return new int[]{px, py, menuH, listTop, listH, contentH, footerY, footerH};
+      return new int[]{position[0], position[1], HDR + listH + footerH,
+         listTop, listH, contentH, footerY, footerH};
    }
 
    private int[] scriptsMenuGeom() {
-      return this.menuGeom(72, this.scriptsContentH(), 14);
+      return this.menuGeom(ToolPanel.SCRIPTS, this.scriptsContentH(), 18);
    }
 
    private int[] configsMenuGeom() {
-      return this.menuGeom(4, this.configsContentH(), 20);
+      return this.menuGeom(ToolPanel.CONFIGS, this.configsContentH(), 22);
    }
 
-   private void drawMenuFrame(GuiGraphicsExtractor ctx, int px, int py, int h, String title, long badge) {
-      Font font = Minecraft.getInstance().font;
-      int R = 4;
-      RenderUtil.roundedRect(ctx, px + 2, py + 3, 132, h, R, 1426063360);
-      RenderUtil.roundedRect(ctx, px - 1, py - 1, 134, h + 2, R + 1, -14934996);
-      RenderUtil.roundedRect(ctx, px, py, 132, h, R, -267580136);
-      RenderUtil.roundedRect(ctx, px, py, 132, 16, R, -267119584);
-      ctx.fill(px, py + R, px + 132, py + 16, -267119584);
-      ctx.fill(px + R, py + 1, px + 132 - R, py + 2, 587202559);
-      int acc = OyVey.colorManager.getColorWithAlpha(py, 220);
-      ctx.fill(px + R, py + 16 - 2, px + 132 - R, py + 16, acc);
-      int lw = font.width(title);
-      ctx.text(font, title, px + (132 - lw) / 2, py + 4, -1, false);
-      if (badge > 0L) {
-         String cnt = String.valueOf(badge);
-         int bw = font.width(cnt) + 6;
-         int bx2 = px + 132 - bw - 4;
-         int by2 = py + 3;
-         RenderUtil.roundedRect(ctx, bx2, by2, bw, 9, 2, -1716885982);
-         ctx.text(font, cnt, bx2 + 3, by2 + 1, -17596, false);
+   private int[] toolGeometry(ToolPanel tool) {
+      return tool == ToolPanel.CONFIGS ? this.configsMenuGeom() : this.scriptsMenuGeom();
+   }
+
+   private boolean inToolPanel(int x, int y, int[] geometry) {
+      return x >= geometry[0] && x < geometry[0] + PW && y >= geometry[1] && y < geometry[1] + geometry[2];
+   }
+
+   private void drawMenuFrame(GuiGraphicsExtractor ctx, int px, int py, int height, String title, long badge) {
+      RenderUtil.roundedRect(ctx, px + 1, py + 2, PW, height, 3, 0x55000000);
+      RenderUtil.roundedRect(ctx, px, py, PW, height, 3, 0xF019191F);
+      RenderUtil.roundedRect(ctx, px, py, PW, HDR, 3, 0xFA202026);
+      ctx.fill(px, py + HDR - 3, px + PW, py + HDR, 0xFA202026);
+      guiText(ctx, title, px + 6, py + 5, 0xFFE6E7EB, false);
+      if (badge > 0) {
+         String count = Long.toString(badge);
+         guiText(ctx, count, px + PW - guiWidth(count) - 7, py + 5, 0xFF80BDD8, false);
       }
    }
 
@@ -982,11 +1103,11 @@ public class DropdownGui extends Screen {
          this.scriptScroll = maxScroll;
       }
 
-      ctx.enableScissor(px, listTop, px + 132, listTop + listH);
+      ctx.enableScissor(px, listTop, px + PW, listTop + listH);
       int ey = listTop - this.scriptScroll;
       if (scripts.isEmpty()) {
          String msg = "No scripts found";
-         ctx.text(font, msg, px + (132 - font.width(msg)) / 2, listTop + 2, -8947798, false);
+         guiText(ctx, msg, px + (PW - guiWidth(msg)) / 2, listTop + 2, -8947798, false);
       } else {
          for (LuaScript sx : scripts) {
             this.renderScriptRow(ctx, mx, my, sx, px, ey);
@@ -1002,59 +1123,59 @@ public class DropdownGui extends Screen {
 
       ctx.disableScissor();
       if (contentH > listH) {
-         int sbX = px + 132 - 3;
+         int sbX = px + PW - 3;
          ctx.fill(sbX, listTop, sbX + 2, listTop + listH, 587202559);
          int thumbH = Math.max(12, (int)((float)listH * listH / contentH));
          int thumbY = listTop + (maxScroll > 0 ? (int)((float)(listH - thumbH) * this.scriptScroll / maxScroll) : 0);
          ctx.fill(sbX, thumbY, sbX + 2, thumbY + thumbH, -1996488705);
       }
 
-      boolean rHov = mx >= px && mx <= px + 132 && my >= footerY && my <= footerY + footerH;
-      ctx.fill(px, footerY, px + 132, footerY + footerH, rHov ? 548055807 : -871888881);
+      boolean rHov = mx >= px && mx <= px + PW && my >= footerY && my <= footerY + footerH;
+      ctx.fill(px, footerY, px + PW, footerY + footerH, rHov ? 548055807 : -871888881);
       String rl = ClickGuiModule.t("[ Reload Scripts ]");
-      ctx.text(font, rl, px + (132 - font.width(rl)) / 2, footerY + (footerH - 8) / 2, -8939077, false);
-      RenderUtil.maskCorners(ctx, px, py, 132, menuH, 4, -14934996, false, false, true, true);
+      guiText(ctx, rl, px + (PW - guiWidth(rl)) / 2, footerY + (footerH - 8) / 2, -8939077, false);
+      RenderUtil.maskCorners(ctx, px, py, PW, menuH, 4, -14934996, false, false, true, true);
    }
 
    private void renderScriptRow(GuiGraphicsExtractor ctx, int mx, int my, LuaScript sx, int px, int ey) {
       Font font = Minecraft.getInstance().font;
       boolean on = sx.isEnabled();
-      boolean hov = mx >= px && mx <= px + 132 && my >= ey && my <= ey + 13;
+      boolean hov = mx >= px && mx <= px + PW && my >= ey && my <= ey + 13;
       if (hov) {
-         ctx.fill(px, ey, px + 132, ey + 13, 548055807);
+         ctx.fill(px, ey, px + PW, ey + 13, 548055807);
       }
 
-      ctx.text(font, sx.getName(), px + 4, ey + 2 + 1, -2236929, false);
+      guiText(ctx, sx.getName(), px + 4, ey + 2 + 1, -2236929, false);
       if (!sx.getDescription().isEmpty()) {
          String desc = sx.getDescription();
-         int maxDescW = 132 - font.width(sx.getName()) - 30;
+         int maxDescW = PW - guiWidth(sx.getName()) - 30;
 
-         while (desc.length() > 3 && font.width(desc) > maxDescW) {
+         while (desc.length() > 3 && guiWidth(desc) > maxDescW) {
             desc = desc.substring(0, desc.length() - 2) + ".";
          }
 
-         ctx.text(font, desc, px + 4 + font.width(sx.getName()) + 4, ey + 2 + 1, -8947798, false);
+         guiText(ctx, desc, px + 4 + guiWidth(sx.getName()) + 4, ey + 2 + 1, -8947798, false);
       }
 
-      int cbX = px + 132 - 7 - 4;
+      int cbX = px + PW - 7 - 4;
       int cbY = ey + 3;
       drawCheckbox(ctx, cbX, cbY, on, ey);
       if (!sx.getScriptSettings().isEmpty()) {
          String g = expandedScripts.contains(sx) ? "v" : ">";
-         ctx.text(font, g, cbX - font.width(g) - 3, ey + 2 + 1, on ? -7829368 : -12303292, false);
+         guiText(ctx, g, cbX - guiWidth(g) - 3, ey + 2 + 1, on ? -7829368 : -12303292, false);
       }
 
-      ctx.fill(px + 2, ey + 13 - 1, px + 132 - 2, ey + 13, -14803408);
+      ctx.fill(px + 2, ey + 13 - 1, px + PW - 2, ey + 13, -14803408);
    }
 
    private void renderScriptSettingRow(GuiGraphicsExtractor ctx, int mx, int my, LuaScriptSetting ss, int px, int ey) {
       Font font = Minecraft.getInstance().font;
-      boolean hov = mx >= px && mx <= px + 132 && my >= ey && my <= ey + 11;
-      ctx.fill(px, ey, px + 132, ey + 11, hov ? 548055807 : -871888881);
+      boolean hov = mx >= px && mx <= px + PW && my >= ey && my <= ey + 11;
+      ctx.fill(px, ey, px + PW, ey + 11, hov ? 548055807 : -871888881);
       ctx.fill(px + 3, ey, px + 4, ey + 11, 872415231);
       String name = ss.getName();
-      ctx.text(font, name, px + 7, ey + 1 + 1, -4473925, false);
-      int re = px + 132 - 4;
+      guiText(ctx, name, px + 7, ey + 1 + 1, -4473925, false);
+      int re = px + PW - 4;
       switch (ss.getType()) {
          case BOOLEAN:
             int cbX = re - 7;
@@ -1064,19 +1185,19 @@ public class DropdownGui extends Screen {
          case SLIDER:
             double pct = (ss.getDouble() - ss.getMin()) / (ss.getMax() - ss.getMin());
             int bx = px + 4;
-            int bw = 124;
+            int bw = PW - 8;
             int barY = ey + 11 - 4;
             RenderUtil.roundedRect(ctx, bx, barY, bw, 2, 1, -15066584);
             RenderUtil.roundedRect(ctx, bx, barY, (int)(bw * pct), 2, 1, acc(ey, 200));
             String val = String.format("%.2f", ss.getDouble());
-            ctx.text(font, val, re - font.width(val), ey + 1 + 1, -7829334, false);
+            guiText(ctx, val, re - guiWidth(val), ey + 1 + 1, -7829334, false);
             break;
          case ENUM:
             String cur = ss.getString();
-            ctx.text(font, cur, re - font.width(cur), ey + 1 + 1, acc(ey, 220), false);
+            guiText(ctx, cur, re - guiWidth(cur), ey + 1 + 1, acc(ey, 220), false);
       }
 
-      ctx.fill(px + 4, ey + 11 - 1, px + 132 - 4, ey + 11, 419430399);
+      ctx.fill(px + 4, ey + 11 - 1, px + PW - 4, ey + 11, 419430399);
    }
 
    private void applyScriptSlider(int mx) {
@@ -1085,23 +1206,6 @@ public class DropdownGui extends Screen {
          double nv = scriptSlider.getMin() + pct * (scriptSlider.getMax() - scriptSlider.getMin());
          scriptSlider.setDoubleValue(nv);
       }
-   }
-
-   private void renderBottomBar(GuiGraphicsExtractor ctx, int mx, int my) {
-      int by = this.height - 20;
-      this.renderBarButton(ctx, mx, my, 4, by, ClickGuiModule.t("Configs"), this.configsOpen);
-      if (OyVey.scriptManager != null) {
-         this.renderBarButton(ctx, mx, my, 72, by, ClickGuiModule.t("Scripts"), this.scriptsOpen);
-      }
-   }
-
-   private void renderBarButton(GuiGraphicsExtractor ctx, int mx, int my, int bx, int by, String lbl, boolean open) {
-      Font font = Minecraft.getInstance().font;
-      int bw = 64;
-      int bh = 16;
-      boolean hov = mx >= bx && mx <= bx + bw && my >= by && my <= by + bh;
-      ctx.fill(bx, by, bx + bw, by + bh, open ? acc(by, 190) : (hov ? 1157627903 : -871099372));
-      ctx.text(font, lbl, bx + (bw - font.width(lbl)) / 2, by + (bh - 8) / 2, open ? -1 : -2236963, false);
    }
 
    private void renderConfigsMenu(GuiGraphicsExtractor ctx, int mx, int my) {
@@ -1121,55 +1225,50 @@ public class DropdownGui extends Screen {
          this.configScroll = maxScroll;
       }
 
-      ctx.enableScissor(px, listTop, px + 132, listTop + listH);
+      ctx.enableScissor(px, listTop, px + PW, listTop + listH);
       if (this.configList.isEmpty()) {
          String msg = ClickGuiModule.t("No configs yet");
-         ctx.text(font, msg, px + (132 - font.width(msg)) / 2, listTop + 3, -8947798, false);
+         guiText(ctx, msg, px + (PW - guiWidth(msg)) / 2, listTop + 3, -8947798, false);
       } else {
          int ey = listTop - this.configScroll;
 
          for (String cfg : this.configList) {
-            boolean hov = mx >= px && mx <= px + 132 && my >= ey && my < ey + 16;
-            if (hov) {
-               ctx.fill(px, ey, px + 132, ey + 16, 548055807);
+            int rowH = this.configRowH(cfg);
+            boolean hover = mx >= px && mx < px + PW && my >= Math.max(ey, listTop)
+               && my < Math.min(ey + rowH, listTop + listH);
+            if (hover) ctx.fill(px, ey, px + PW, ey + rowH, 0x202D8AA5);
+            List<String> lines = wrapText(cfg, PW - 12);
+            for (int i = 0; i < lines.size(); i++) {
+               guiText(ctx, lines.get(i), px + 6, ey + 3 + i * 12, hover ? -1 : 0xFFCFD3DD, false);
             }
-
-            String name = cfg;
-
-            while (name.length() > 3 && font.width(name) > 118) {
-               name = name.substring(0, name.length() - 2) + ".";
-            }
-
-            ctx.text(font, name, px + 6, ey + 4, hov ? -1 : -3355444, false);
-            ctx.fill(px + 2, ey + 16 - 1, px + 132 - 2, ey + 16, -14803408);
-            ey += 16;
+            ey += rowH;
          }
       }
 
       ctx.disableScissor();
       if (contentH > listH) {
-         int sbX = px + 132 - 3;
+         int sbX = px + PW - 3;
          ctx.fill(sbX, listTop, sbX + 2, listTop + listH, 587202559);
          int thumbH = Math.max(12, (int)((float)listH * listH / contentH));
          int thumbY = listTop + (maxScroll > 0 ? (int)((float)(listH - thumbH) * this.configScroll / maxScroll) : 0);
          ctx.fill(sbX, thumbY, sbX + 2, thumbY + thumbH, -1996488705);
       }
 
-      ctx.fill(px, footerY, px + 132, footerY + footerH, -871888881);
-      ctx.fill(px, footerY, px + 132, footerY + 1, 872415231);
-      int inputW = 88;
+      ctx.fill(px, footerY, px + PW, footerY + footerH, -871888881);
+      ctx.fill(px, footerY, px + PW, footerY + 1, 872415231);
+      int inputW = PW - 44;
       boolean inputHov = mx >= px + 4 && mx <= px + inputW && my >= footerY + 3 && my <= footerY + footerH - 3;
       ctx.fill(px + 4, footerY + 3, px + inputW, footerY + footerH - 3, this.configTyping ? 1157627903 : (inputHov ? 587202559 : 419430399));
       boolean blink = this.configTyping && System.currentTimeMillis() % 900L < 450L;
       String dispName = this.configSaveName.isEmpty() ? (this.configTyping ? "" : ClickGuiModule.t("name...")) : this.configSaveName;
-      ctx.text(font, dispName + (blink ? "|" : ""), px + 7, footerY + (footerH - 8) / 2, this.configSaveName.isEmpty() ? -12303292 : -1118482, false);
+      guiText(ctx, dispName + (blink ? "|" : ""), px + 7, footerY + (footerH - 8) / 2, this.configSaveName.isEmpty() ? -12303292 : -1118482, false);
       int saveBtnX = px + inputW + 2;
-      int saveBtnRight = px + 132 - 4;
+      int saveBtnRight = px + PW - 4;
       boolean shov = mx >= saveBtnX && mx <= saveBtnRight && my >= footerY + 3 && my <= footerY + footerH - 3;
       ctx.fill(saveBtnX, footerY + 3, saveBtnRight, footerY + footerH - 3, shov ? acc(footerY, 200) : 872415231);
       String save = ClickGuiModule.t("Save");
-      ctx.text(font, save, saveBtnX + (saveBtnRight - saveBtnX - font.width(save)) / 2, footerY + (footerH - 8) / 2, -1, false);
-      RenderUtil.maskCorners(ctx, px, py, 132, menuH, 4, -14934996, false, false, true, true);
+      guiText(ctx, save, saveBtnX + (saveBtnRight - saveBtnX - guiWidth(save)) / 2, footerY + (footerH - 8) / 2, -1, false);
+      RenderUtil.maskCorners(ctx, px, py, PW, menuH, 4, -14934996, false, false, true, true);
    }
 
    private void refreshConfigList() {

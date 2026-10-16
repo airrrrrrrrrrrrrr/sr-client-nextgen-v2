@@ -7,7 +7,9 @@ import me.alpha432.oyvey.features.cape.CapeTextureLoader;
 import me.alpha432.oyvey.features.modules.render.Chams;
 import me.alpha432.oyvey.util.render.Layers;
 import net.minecraft.client.model.Model;
+import net.minecraft.client.model.player.PlayerModel;
 import net.minecraft.client.renderer.SubmitNodeCollection;
+import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.feature.ModelFeatureRenderer.CrumblingOverlay;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -40,7 +42,9 @@ public class MixinSubmitNodeCollection {
       CallbackInfo ci
    ) {
       if (!oyvey$replacing) {
-         boolean isChams = Chams.renderingChamsEntity;
+         // Entity submission also includes armor, held items and resource-pack
+         // feature models. Restrict the depth override to the actual player body.
+         boolean isChams = Chams.renderingChamsEntity && model instanceof PlayerModel && state instanceof AvatarRenderState;
          Identifier capeTexId = getCapeTexture();
          if (isChams || capeTexId != null) {
             oyvey$replacing = true;

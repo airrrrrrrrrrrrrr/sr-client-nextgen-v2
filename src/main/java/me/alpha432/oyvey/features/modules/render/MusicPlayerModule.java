@@ -3,16 +3,19 @@ package me.alpha432.oyvey.features.modules.render;
 import java.awt.Color;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.event.impl.render.Render2DEvent;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.client.HudModule;
+import me.alpha432.oyvey.features.modules.hud.WatermarkHudModule;
 import me.alpha432.oyvey.features.settings.Setting;
-import me.alpha432.oyvey.util.render.RenderUtil;
+import me.alpha432.oyvey.util.render.HudFont;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 
 public class MusicPlayerModule extends HudModule {
    public final Setting<Integer> refreshSecs = this.register(new Setting<>("RefreshSecs", 3, 1, 30));
    public final Setting<Boolean> showSource = this.register(new Setting<>("ShowSource", true));
+   public final Setting<Boolean> matchWatermark = this.register(new Setting<>("MatchWatermark", true));
    public final Setting<Boolean> rainbow = this.register(new Setting<>("Rainbow", true));
    public final Setting<Integer> r = this.register(new Setting<>("Red", 100, 0, 255, v -> !this.rainbow.getValue()));
    public final Setting<Integer> g = this.register(new Setting<>("Green", 180, 0, 255, v -> !this.rainbow.getValue()));
@@ -24,6 +27,10 @@ public class MusicPlayerModule extends HudModule {
 
    public MusicPlayerModule() {
       super("MusicPlayer", "Shows the currently playing media.", 200.0F, 14.0F, Module.Category.RENDER);
+      this.rainbow.setVisibility(v -> !this.matchWatermark.getValue());
+      this.r.setVisibility(v -> !this.matchWatermark.getValue() && !this.rainbow.getValue());
+      this.g.setVisibility(v -> !this.matchWatermark.getValue() && !this.rainbow.getValue());
+      this.b.setVisibility(v -> !this.matchWatermark.getValue() && !this.rainbow.getValue());
    }
 
    @Override
@@ -39,7 +46,6 @@ public class MusicPlayerModule extends HudModule {
 
    @Override
    protected void render(Render2DEvent e) {
-      super.render(e);
       if (!nullCheck()) {
          long now = System.currentTimeMillis();
          if (now - this.lastRefresh > this.refreshSecs.getValue().intValue() * 1000L) {
@@ -50,29 +56,31 @@ public class MusicPlayerModule extends HudModule {
          GuiGraphicsExtractor gfx = e.getContext();
          long ms = System.currentTimeMillis();
          int accent = this.accentColor(ms);
+         WatermarkHudModule watermark = OyVey.moduleManager.getModuleByClass(WatermarkHudModule.class);
+         HudFont selected = this.matchWatermark.getValue() && watermark != null ? watermark.font.getValue() : HudFont.MINECRAFT;
          String note = "\u266a ";
          String title = this.nowPlaying;
          String src = this.showSource.getValue() && !this.mediaSource.isEmpty() ? "  [" + this.mediaSource + "]" : "";
-         int fh = 9;
          int aW = 2;
-         int padX = 5;
-         int padY = 3;
-         int noteW = mc.font.width(note);
-         int titleW = mc.font.width(title);
-         int srcW = mc.font.width(src);
+         int padX = 8;
+         int padY = 6;
+         int noteW = mc.font.width(selected.text(note));
+         int titleW = mc.font.width(selected.text(title));
+         int srcW = mc.font.width(selected.text(src));
          int totalW = aW + padX + noteW + titleW + srcW + padX;
-         int totalH = padY + fh + padY;
+         int totalH = 20;
+         this.setWidth(totalW);
+         this.setHeight(totalH);
+         super.render(e);
          int px = (int)this.getX();
          int py = (int)this.getY();
-         RenderUtil.roundedRect(gfx, px, py, totalW, totalH, 3, 1426458128);
+         WatermarkHudModule.drawBadge(gfx, px, py, totalW, totalH);
          gfx.fill(px, py + 3, px + aW, py + totalH - 3, accent);
          int tx = px + aW + padX;
          int ty = py + padY;
-         gfx.text(mc.font, note, tx, ty, accent, true);
-         gfx.text(mc.font, title, tx + noteW, ty, -2236963, true);
-         gfx.text(mc.font, src, tx + noteW + titleW, ty, -11184794, false);
-         this.setWidth(totalW);
-         this.setHeight(totalH);
+         gfx.text(mc.font, selected.text(note), tx, ty, accent, true);
+         gfx.text(mc.font, selected.text(title), tx + noteW, ty, 0xFFEAEAEA, true);
+         gfx.text(mc.font, selected.text(src), tx + noteW + titleW, ty, 0xFF969696, false);
       }
    }
 
@@ -315,6 +323,10 @@ public class MusicPlayerModule extends HudModule {
    }
 
    private int accentColor(long now) {
+      if (this.matchWatermark.getValue() && OyVey.moduleManager != null) {
+         WatermarkHudModule watermark = OyVey.moduleManager.getModuleByClass(WatermarkHudModule.class);
+         return 0xFF000000 | (watermark == null ? 0x69CDFF : watermark.getAccentColor(now));
+      }
       if (this.rainbow.getValue()) {
          float hue = (float)(now % 3600L) / 3600.0F;
          return Color.getHSBColor(hue, 1.0F, 1.0F).getRGB() | 0xFF000000;

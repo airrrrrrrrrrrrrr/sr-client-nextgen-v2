@@ -1,9 +1,13 @@
 package me.alpha432.oyvey.features.modules.movement;
 
+import me.alpha432.oyvey.OyVey;
+import me.alpha432.oyvey.util.player.Vulcan2Movement;
 import me.alpha432.oyvey.event.impl.network.PacketEvent;
 import me.alpha432.oyvey.event.system.Subscribe;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.settings.Setting;
+import net.minecraft.client.player.ClientInput;
+import net.minecraft.world.entity.player.Input;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.PosRot;
 import net.minecraft.world.effect.MobEffects;
@@ -145,6 +149,9 @@ public class Speed extends Module {
    );
    public final Setting<Boolean> fortyFive = this.register(new Setting<>("45Mode", false, v -> this.mode.getValue() == Speed.Mode.LEGIT));
    private int airTicks = 0;
+   private final Vulcan2Movement vulcan2Movement = new Vulcan2Movement();
+   private int vulcan2LastTick = Integer.MIN_VALUE;
+   private Object vulcan2Player;
    private boolean wasOnGround = true;
    private double wobblePhase = 0.0;
    private double vgPrevSpeed = 0.0;
@@ -154,11 +161,22 @@ public class Speed extends Module {
 
    public Speed() {
       super("Speed", "Epic bypass", Module.Category.MOVEMENT);
-      this.lowHopHeight.setVisibility(v -> this.lowHop.getValue());
+      this.lowHopHeight.setVisibility(v -> this.mode.getValue() != Mode.VULCAN2 && this.lowHop.getValue());
+      this.speed.setVisibility(v -> this.mode.getValue() != Mode.VULCAN2 && this.mode.getValue() != Mode.VULCANGROUND
+         && this.mode.getValue() != Mode.LEGIT && this.mode.getValue() != Mode.CUBECRAFT);
+      this.jump.setVisibility(v -> this.speed.isVisible());
+      this.lowHop.setVisibility(v -> this.speed.isVisible());
+      this.damageBoost.setVisibility(v -> this.mode.getValue() != Mode.VULCAN2
+         && this.mode.getValue() != Mode.LEGIT && this.mode.getValue() != Mode.CUBECRAFT);
+      this.boostFactor.setVisibility(v -> this.speed.isVisible() && this.damageBoost.getValue());
+      this.potionSync.setVisibility(v -> this.speed.isVisible());
+      this.fastFall.setVisibility(v -> this.speed.isVisible());
+      this.airTicksMin.setVisibility(v -> this.speed.isVisible() && this.fastFall.getValue());
    }
 
    @Override
    public void onEnable() {
+      this.resetVulcan2();
       this.airTicks = 0;
       this.wasOnGround = true;
       this.wobblePhase = 0.0;
@@ -169,6 +187,10 @@ public class Speed extends Module {
 
    @Override
    public void onTick() {
+      // Vulcan2 is applied immediately before physical movement.
+      if (this.mode.getValue() == Mode.VULCAN2) {
+         return;
+      }
       if (!nullCheck()) {
          if (mc.player.onGround()) {
             this.airTicks = 0;
@@ -232,6 +254,61 @@ public class Speed extends Module {
             }
          }
       }
+   }
+
+   /** Runs once per keyboard tick, after movement correction and before physics. */
+   public void applyVulcan2Input(ClientInput input) {
+      if (!this.isEnabled() || this.mode.getValue() != Mode.VULCAN2 || nullCheck()) {
+         this.resetVulcan2();
+         return;
+      }
+      if (mc.player.isInWater() || mc.player.isInLava() || mc.player.onClimbable()
+         || mc.player.isPassenger() || mc.player.isFallFlying() || mc.player.getAbilities().flying) {
+         this.resetVulcan2();
+         return;
+      }
+
+      Input keys = input.keyPresses;
+      // The preset supplies its own launch; ordinary jump input stays blocked.
+      input.keyPresses = new Input(keys.forward(), keys.backward(), keys.left(), keys.right(),
+         false, keys.shift(), keys.sprint());
+   }
+
+   @Override
+   public void onDisable() {
+      this.resetVulcan2();
+   }
+
+   private void resetVulcan2() {
+      this.vulcan2Movement.reset();
+      this.vulcan2LastTick = Integer.MIN_VALUE;
+      this.vulcan2Player = null;
+   }
+
+   public void applyVulcan2Motion() {
+      if (!this.isEnabled() || this.mode.getValue() != Mode.VULCAN2 || nullCheck()) {
+         this.resetVulcan2();
+         return;
+      }
+      if (mc.player.isInWater() || mc.player.isInLava() || mc.player.onClimbable()
+         || mc.player.isPassenger() || mc.player.isFallFlying() || mc.player.getAbilities().flying) {
+         this.resetVulcan2();
+         return;
+      }
+      if (this.vulcan2Player != mc.player) {
+         this.resetVulcan2();
+         this.vulcan2Player = mc.player;
+      }
+      if (this.vulcan2LastTick == mc.player.tickCount) {
+         return;
+      }
+      this.vulcan2LastTick = mc.player.tickCount;
+      var input = mc.player.input.getMoveVector();
+      if (mc.player.onGround() && input.lengthSquared() > 1.0E-6F) {
+         OyVey.TIMER = 1.0F;
+      }
+      mc.player.setDeltaMovement(this.vulcan2Movement.step(mc.player.getDeltaMovement(),
+         mc.player.onGround(), mc.player.hurtTime > 0, mc.player.getYRot(), input.x, input.y));
    }
 
    private void handleStrafeMode(double speed) {
@@ -551,6 +628,7 @@ public class Speed extends Module {
       STRAFE,
       VANILLA,
       VULCAN,
+      VULCAN2,
       GROUND,
       VULCANGROUND,
       TEST,

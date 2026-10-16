@@ -1,6 +1,9 @@
 package me.alpha432.oyvey.mixin.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.math.Axis;
+import me.alpha432.oyvey.OyVey;
+import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
 import me.alpha432.oyvey.features.modules.render.AnimationsModule;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.ItemInHandRenderer;
@@ -9,8 +12,12 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.util.Mth;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
@@ -20,7 +27,61 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(ItemInHandRenderer.class)
-public class MixinItemInHandRenderer {
+public abstract class MixinItemInHandRenderer {
+   @Shadow
+   private void applyItemArmTransform(PoseStack matrices, HumanoidArm arm, float equipProgress) {
+      throw new AssertionError("Mixin shadow");
+   }
+
+   @Shadow
+   public abstract void renderItem(LivingEntity entity, ItemStack item, ItemDisplayContext displayContext,
+      PoseStack matrices, SubmitNodeCollector collector, int light);
+
+   @Inject(method = "renderArmWithItem", at = @At("HEAD"), cancellable = true)
+   private void oyvey$renderFakeAutoBlock(
+      AbstractClientPlayer player, float tickProgress, float pitch, InteractionHand hand,
+      float swingProgress, ItemStack item, float equipProgress, PoseStack matrices,
+      SubmitNodeCollector collector, int light, CallbackInfo ci
+   ) {
+      if (hand != InteractionHand.MAIN_HAND || !item.is(ItemTags.SWORDS) || player.isScoping()
+         || OyVey.moduleManager == null) {
+         return;
+      }
+      KillauraRecode aura = OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
+      if (aura == null || !aura.isFakeBlocking()) {
+         return;
+      }
+
+      HumanoidArm arm = player.getMainArm();
+      int side = arm == HumanoidArm.RIGHT ? 1 : -1;
+      matrices.pushPose();
+      try {
+         AnimationsModule anim = AnimationsModule.INSTANCE;
+         if (anim != null && anim.isEnabled() && anim.mainHandEnabled.getValue()) {
+            AnimationsModule.applyHandTransform(matrices,
+               anim.mainHandX.getValue(), anim.mainHandY.getValue(), anim.mainHandScale.getValue(),
+               anim.mainHandRotX.getValue(), anim.mainHandRotY.getValue(), anim.mainHandRotZ.getValue());
+         }
+         // The modern attack-strength equip dip looks like releasing a 1.8 block.
+         // Keep the sword raised; the HUD still reads the actual attack strength.
+         this.applyItemArmTransform(matrices, arm, 0.0F);
+         matrices.mulPose(Axis.YP.rotationDegrees(side * 45.0F));
+         matrices.translate(side * -0.5F, 0.2F, 0.0F);
+         matrices.mulPose(Axis.YP.rotationDegrees(side * 30.0F));
+         matrices.mulPose(Axis.XP.rotationDegrees(-80.0F));
+         matrices.mulPose(Axis.YP.rotationDegrees(side * 60.0F));
+         float swing = Mth.sin(Mth.sqrt(swingProgress) * Mth.PI);
+         matrices.mulPose(Axis.XP.rotationDegrees(-10.0F * swing));
+         matrices.mulPose(Axis.ZP.rotationDegrees(side * -10.0F * swing));
+         this.renderItem(player, item, arm == HumanoidArm.RIGHT
+            ? ItemDisplayContext.FIRST_PERSON_RIGHT_HAND : ItemDisplayContext.FIRST_PERSON_LEFT_HAND,
+            matrices, collector, light);
+      } finally {
+         matrices.popPose();
+      }
+      ci.cancel();
+   }
+
    @Inject(
       method = "renderArmWithItem",
       at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/vertex/PoseStack;pushPose()V", shift = Shift.AFTER),

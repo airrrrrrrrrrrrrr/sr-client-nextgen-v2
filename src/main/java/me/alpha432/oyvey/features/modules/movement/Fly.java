@@ -3,10 +3,18 @@ package me.alpha432.oyvey.features.modules.movement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import me.alpha432.oyvey.event.impl.render.Render2DEvent;
 import me.alpha432.oyvey.event.impl.network.PacketEvent;
 import me.alpha432.oyvey.event.system.Subscribe;
 import me.alpha432.oyvey.features.modules.Module;
+import me.alpha432.oyvey.features.modules.client.NotificationsModule;
 import me.alpha432.oyvey.features.settings.Setting;
+import me.alpha432.oyvey.util.player.VerusFlightTimer;
+import me.alpha432.oyvey.util.render.HudFont;
+import me.alpha432.oyvey.util.render.RenderUtil;
+import net.minecraft.network.protocol.game.ClientboundDamageEventPacket;
+import net.minecraft.network.protocol.game.ClientboundHurtAnimationPacket;
+import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ServerboundAcceptTeleportationPacket;
@@ -29,6 +37,7 @@ public class Fly extends Module {
             && this.mode.getValue() != Fly.Mode.DEATHZONE
             && this.mode.getValue() != Fly.Mode.TEST
             && this.mode.getValue() != Fly.Mode.GHOSTLY
+            && this.mode.getValue() != Fly.Mode.VERUS
       )
    );
    public final Setting<Float> boost = this.register(new Setting<>("Boost", 0.42F, 0.1F, 5.0F, v -> this.mode.getValue() == Fly.Mode.JUMP));
@@ -52,8 +61,8 @@ public class Fly extends Module {
       )
    );
    private final Setting<Boolean> mp3NoCollide = this.register(new Setting<>("MP3NoCollide", true, v -> this.mode.getValue() == Fly.Mode.MOSPIXEL3));
-   private final Setting<Boolean> capEnabled = this.register(new Setting<>("SpeedCap", false));
-   private final Setting<Float> capSpeed = this.register(new Setting<>("MaxSpeed", 2.0F, 0.05F, 10.0F, v -> this.capEnabled.getValue()));
+   private final Setting<Boolean> capEnabled = this.register(new Setting<>("SpeedCap", false, v -> this.mode.getValue() != Fly.Mode.VERUS));
+   private final Setting<Float> capSpeed = this.register(new Setting<>("MaxSpeed", 2.0F, 0.05F, 10.0F, v -> this.mode.getValue() != Fly.Mode.VERUS && this.capEnabled.getValue()));
    private final Setting<Boolean> antiKick = this.register(new Setting<>("AntiKick", false, v -> this.mode.getValue() == Fly.Mode.VANILLA));
    private final Setting<Float> glideSpeed = this.register(
       new Setting<>("GlideSpeed", 0.03F, 0.001F, 0.5F, v -> this.mode.getValue() == Fly.Mode.VANILLA && this.antiKick.getValue())
@@ -71,6 +80,12 @@ public class Fly extends Module {
    private boolean bypass = false;
    private final List<Packet<?>> blinkBuffer = new ArrayList<>();
    private boolean pendingTestMode = false;
+   private final VerusFlightTimer verusTimer = new VerusFlightTimer();
+   private Vec3 verusOrigin;
+   private Vec3 verusClip;
+   private Object verusLevel, verusPlayer;
+   private float verusHealth;
+   private volatile long verusGeneration;
 
    public Fly() {
       super("Fly", "Fly through the air.", Module.Category.MOVEMENT);
@@ -83,7 +98,14 @@ public class Fly extends Module {
       this.jumpKeyWasDown = false;
       this.phase = Fly.Phase.IDLE;
       this.blinkBuffer.clear();
+      this.verusTimer.reset();
+      this.verusOrigin = null;
       switch ((Fly.Mode)this.mode.getValue()) {
+         case VERUS:
+            if (mc.player != null && mc.level != null) {
+               this.startVerus();
+            }
+            break;
          case DEATHZONE:
             this.initDamageSequence(false);
             break;
@@ -124,6 +146,7 @@ public class Fly extends Module {
 
    @Override
    public void onDisable() {
+      this.clearVerus(true);
       if (mc.player != null) {
          mc.player.getAbilities().flying = false;
          mc.player.fallDistance = 0.0;
@@ -157,6 +180,14 @@ public class Fly extends Module {
 
    @Override
    public void onTick() {
+      if (this.mode.getValue() != Mode.VERUS && !this.verusTimer.isIdle()) {
+         this.clearVerus(true);
+      }
+      if ((mc.player == null || mc.level == null) && !this.verusTimer.isIdle()) {
+         this.clearVerus(false);
+         this.disable();
+         return;
+      }
       if (mc.player != null) {
          switch ((Fly.Mode)this.mode.getValue()) {
             case JUMP:
@@ -164,6 +195,9 @@ public class Fly extends Module {
                break;
             case VANILLA:
                this.handleVanilla();
+               break;
+            case VERUS:
+               this.handleVerus();
                break;
             case NCP:
                this.handleNcp();
@@ -196,7 +230,7 @@ public class Fly extends Module {
                this.handleGhostly();
          }
 
-         if (this.capEnabled.getValue()) {
+         if (this.mode.getValue() != Fly.Mode.VERUS && this.capEnabled.getValue()) {
             Vec3 mot = mc.player.getDeltaMovement();
             double hs = Math.sqrt(mot.x * mot.x + mot.z * mot.z);
             if (hs > this.capSpeed.getValue().floatValue()) {
@@ -252,6 +286,124 @@ public class Fly extends Module {
       }
 
       mc.player.setDeltaMovement(dx, dy, dz);
+   }
+
+   private void handleVerus() {
+      mc.player.getAbilities().flying = false;
+      if (this.verusTimer.isIdle()) {
+         this.startVerus();
+      }
+      if (!this.isEnabled() || this.verusTimer.isIdle()) {
+         return;
+      }
+      if (this.verusLevel != mc.level || this.verusPlayer != mc.player || !mc.player.isAlive()) {
+         this.clearVerus(false);
+         this.disable();
+         return;
+      }
+      long now = System.nanoTime();
+      if (this.verusTimer.isWaiting()) {
+         if (this.verusTimer.waitTimedOut(now)) {
+            NotificationsModule.post("Verus Fly", "No damage received; try again.", 0xE58B74, 2500);
+            this.disable();
+            return;
+         }
+         mc.player.setPos(this.verusClip.x, this.verusClip.y, this.verusClip.z);
+         mc.player.setDeltaMovement(Vec3.ZERO);
+         return;
+      }
+      if (this.verusTimer.flightExpired(now)) {
+         NotificationsModule.post("Verus Fly", "Flight ended", 0x69CDFF, 2000);
+         this.disable();
+         return;
+      }
+      if (mc.player.isPassenger() || mc.player.isFallFlying() || mc.player.isInWater()
+         || mc.player.isInLava() || mc.player.onClimbable()) {
+         this.disable();
+         return;
+      }
+
+      this.flyStrafe(mc.screen == null ? 0.9F : 0.0F);
+      double vertical = 0.0;
+      if (mc.screen == null) {
+         if (mc.options.keyJump.isDown()) {
+            vertical = 0.42;
+         } else if (mc.options.keyShift.isDown()) {
+            vertical = -0.42;
+         }
+      }
+      Vec3 motion = mc.player.getDeltaMovement();
+      mc.player.setDeltaMovement(motion.x, vertical, motion.z);
+   }
+
+   private void startVerus() {
+      if (mc.player == null || mc.level == null) {
+         return;
+      }
+      if (!mc.player.onGround() || mc.player.isSpectator() || mc.player.isPassenger()
+         || mc.player.isInWater() || mc.player.isInLava()) {
+         NotificationsModule.post("Verus Fly", "Start while standing on solid ground.", 0xE58B74, 2500);
+         this.disable();
+         return;
+      }
+      this.verusOrigin = mc.player.position();
+      this.verusClip = this.verusOrigin.add(0, -3.0, 0);
+      if (this.verusClip.y < mc.level.getMinY()) {
+         this.verusOrigin = null;
+         this.disable();
+         return;
+      }
+      this.verusLevel = mc.level;
+      this.verusPlayer = mc.player;
+      this.verusHealth = mc.player.getHealth();
+      this.verusGeneration++;
+      this.verusTimer.arm(System.nanoTime());
+      mc.player.getAbilities().flying = false;
+      mc.player.setDeltaMovement(Vec3.ZERO);
+      mc.player.fallDistance = 0;
+      this.moveVerus(this.verusClip);
+   }
+
+   private void moveVerus(Vec3 position) {
+      mc.player.setPos(position.x, position.y, position.z);
+      this.sendNoEvent(new Pos(position.x, position.y, position.z, false, mc.player.horizontalCollision));
+   }
+
+   private void clearVerus(boolean restoreClip) {
+      this.verusGeneration++;
+      if (mc.player != null && mc.level == this.verusLevel && mc.player == this.verusPlayer) {
+         if (restoreClip && this.verusTimer.isWaiting() && this.verusOrigin != null) {
+            this.moveVerus(this.verusOrigin);
+         }
+         if (!this.verusTimer.isIdle()) {
+            Vec3 motion = mc.player.getDeltaMovement();
+            mc.player.setDeltaMovement(0, Math.min(0, motion.y), 0);
+         }
+      }
+      this.verusTimer.reset();
+      this.verusOrigin = null;
+      this.verusClip = null;
+      this.verusLevel = null;
+      this.verusPlayer = null;
+   }
+
+   @Override
+   public void onRender2D(Render2DEvent event) {
+      if (this.mode.getValue() != Mode.VERUS || this.verusTimer.isIdle() || mc.player == null
+         || mc.options.hideGui) {
+         return;
+      }
+      String message = this.verusTimer.isWaiting() ? "Waiting for damage..."
+         : "u can fly for " + this.verusTimer.secondsRemaining(System.nanoTime()) + " seconds";
+      var label = HudFont.ARIAL.text(message);
+      int width = mc.font.width(label) + 20;
+      int x = (mc.getWindow().getGuiScaledWidth() - width) / 2;
+      int y = mc.getWindow().getGuiScaledHeight() - 64;
+      var graphics = event.getContext();
+      RenderUtil.roundedRect(graphics, x, y, width, 34, 4, 0xEE181D25);
+      graphics.fill(x, y + 5, x + 2, y + 29, 0xFF69CDFF);
+      graphics.text(mc.font, HudFont.ARIAL.text("Verus Fly"), x + 10, y + 5, 0xFF69CDFF, false);
+      graphics.text(mc.font, label, x + 10, y + 19, 0xFFE6ECF2, false);
    }
 
    private void handleNcp() {
@@ -501,6 +653,40 @@ public class Fly extends Module {
    private void onPacketReceive(PacketEvent.Receive event) {
       if (mc.player != null) {
          Fly.Mode m = this.mode.getValue();
+         if (m == Mode.VERUS) {
+            Object player = mc.player;
+            Object level = mc.level;
+            long generation = this.verusGeneration;
+            Packet<?> packet = event.getPacket();
+            boolean damage = packet instanceof ClientboundDamageEventPacket hurt && hurt.entityId() == mc.player.getId()
+               || packet instanceof ClientboundHurtAnimationPacket hurtAnimation && hurtAnimation.id() == mc.player.getId();
+            if (!damage && !(packet instanceof ClientboundSetHealthPacket) && !(packet instanceof ClientboundPlayerPositionPacket)) {
+               return;
+            }
+            mc.execute(() -> {
+               if (!this.isEnabled() || this.mode.getValue() != Mode.VERUS
+                  || mc.player != player || mc.level != level || this.verusPlayer != player
+                  || this.verusGeneration != generation) {
+                  return;
+               }
+               if (packet instanceof ClientboundPlayerPositionPacket) {
+                  this.clearVerus(false);
+                  this.disable();
+                  return;
+               }
+               boolean confirmedDamage = damage;
+               if (packet instanceof ClientboundSetHealthPacket health) {
+                  confirmedDamage |= health.getHealth() < this.verusHealth;
+                  this.verusHealth = health.getHealth();
+               }
+               if (confirmedDamage && this.verusOrigin != null && this.verusTimer.startOnDamage(System.nanoTime())) {
+                  this.moveVerus(this.verusOrigin);
+                  mc.player.setDeltaMovement(Vec3.ZERO);
+                  mc.player.fallDistance = 0;
+               }
+            });
+            return;
+         }
          if (m != Fly.Mode.VULCAN_GHOST && m != Fly.Mode.GHOSTLY) {
             if (m == Fly.Mode.DEATHZONE && this.phase == Fly.Phase.FLYING) {
                if (event.getPacket() instanceof ClientboundPlayerPositionPacket) {
@@ -589,6 +775,7 @@ public class Fly extends Module {
    public enum Mode {
       JUMP,
       VANILLA,
+      VERUS,
       NCP,
       VULCAN,
       VULCAN_OLD,
