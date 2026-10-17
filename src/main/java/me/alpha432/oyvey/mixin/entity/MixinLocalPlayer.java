@@ -17,6 +17,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(LocalPlayer.class)
 public class MixinLocalPlayer {
+   @Inject(method = "canStartSprinting", at = @At("RETURN"), cancellable = true)
+   private void oyvey$scaffoldSprintEligibility(CallbackInfoReturnable<Boolean> cir) {
+      if (OyVey.moduleManager == null) return;
+      Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
+      if (scaffold != null && scaffold.isSprintSuppressed()) cir.setReturnValue(false);
+   }
+
    @Unique
    private Scaffold oyvey$scaffoldHeadPose() {
       if (!RotationManager.isExtractingLocal || OyVey.moduleManager == null) return null;

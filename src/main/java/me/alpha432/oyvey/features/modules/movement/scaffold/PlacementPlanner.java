@@ -8,6 +8,7 @@ import java.util.List;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
+import me.alpha432.oyvey.util.SilentRotationMath;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -30,6 +31,33 @@ public final class PlacementPlanner {
 
    public record Placement(BlockPos target, BlockHitResult hit) { }
 
+   public static float backwardPitch(List<BlockPos> targets, Vec3 eyes, double reach,
+      float yaw, float sentPitch, double sensitivity, World world) {
+      // Keep the usual steep look whenever possible. At grid corners the
+      // support may require a shallower pitch; yaw always remains backward.
+      for (int offset = 0; offset <= 148; offset++) {
+         for (int sign : new int[]{1, -1}) {
+            float pitch = 82 + offset * sign * 0.25F;
+            if (pitch < 45 || pitch > 89.5F) continue;
+            pitch = SilentRotationMath.quantizeRotation(yaw, sentPitch, yaw, pitch, sensitivity).pitch();
+            if (findAlongLook(targets, eyes, reach, yaw, pitch, world) != null) return pitch;
+         }
+      }
+      return 82;
+   }
+
+   /** Select the block actually under a held look, without generating new aim. */
+   public static Placement findAlongLook(List<BlockPos> targets, Vec3 eyes, double reach,
+      float yaw, float pitch, World world) {
+      BlockHitResult hit = world.raycast(eyes, eyes.add(Vec3.directionFromRotation(pitch, yaw).scale(reach)));
+      if (hit == null || hit.getType() != HitResult.Type.BLOCK || hit.isInside()) return null;
+      BlockPos target = hit.getBlockPos().relative(hit.getDirection());
+      if (!targets.contains(target) || !world.replaceable(target)
+         || !world.attachable(hit.getBlockPos(), hit.getDirection())) return null;
+      Placement placement = new Placement(target, hit);
+      return world.rotationValid(placement) ? placement : null;
+   }
+
    public static boolean matchesSupport(Placement placement, BlockHitResult hit) {
       return placement != null && hit != null && hit.getType() == HitResult.Type.BLOCK
          && !hit.isInside() && hit.getBlockPos().equals(placement.hit().getBlockPos())
@@ -37,8 +65,37 @@ public final class PlacementPlanner {
          && hit.getBlockPos().relative(hit.getDirection()).equals(placement.target());
    }
 
+   public static boolean lookMatchesSupport(Placement placement, Vec3 eyes, double reach,
+      float yaw, float pitch, World world) {
+      BlockHitResult hit = world.raycast(eyes, eyes.add(Vec3.directionFromRotation(pitch, yaw).scale(reach)));
+      // The preceding camera look can reach a different face of this block.
+      // The actual click still goes through matchesSupport's exact-face check.
+      return placement != null && hit != null && hit.getType() == HitResult.Type.BLOCK && !hit.isInside()
+         && hit.getBlockPos().equals(placement.hit().getBlockPos());
+   }
+
+   public static BlockHitResult findSupportAim(List<BlockPos> supports, Vec3 eyes, double reach, World world) {
+      BlockHitResult nearest = null;
+      for (BlockPos support : supports) {
+         if (!world.attachable(support, Direction.UP)) continue;
+         Vec3 point = Vec3.atCenterOf(support).add(0, 0.499, 0);
+         if (eyes.distanceToSqr(point) > reach * reach) continue;
+         BlockHitResult hit = world.raycast(eyes, point);
+         if (hit != null && hit.getType() == HitResult.Type.BLOCK && !hit.isInside()
+            && hit.getBlockPos().equals(support)
+            && (nearest == null || eyes.distanceToSqr(hit.getLocation()) < eyes.distanceToSqr(nearest.getLocation()))) {
+            nearest = hit;
+         }
+      }
+      return nearest;
+   }
+
    public static int blockLayer(double feetY) {
       return Mth.floor(feetY) - 1;
+   }
+
+   public static int bridgeLayer(double feetY, int lockedLayer, boolean keepY) {
+      return keepY ? lockedLayer : blockLayer(feetY);
    }
 
    public static List<BlockPos> targets(double x, double z, int layer, double velocityX, double velocityZ) {
@@ -81,17 +138,17 @@ public final class PlacementPlanner {
             addFootprint(targets, feet.x + motion.x * time, feet.z + motion.z * time, candidateLayer);
          }
       }
+      // Both grounded and airborne diagonal paths can leave the next footprint
+      // disconnected from confirmed support. Try connectors after direct targets;
+      // this also lets a player waiting at an edge resume after the support ack.
+      var direct = new LinkedHashSet<>(targets);
+      for (BlockPos target : direct) {
+         targets.add(target.north());
+         targets.add(target.south());
+         targets.add(target.west());
+         targets.add(target.east());
+      }
       if (airborne) {
-         // A diagonal landing may touch no confirmed block directly. Consider
-         // a one-block connector after all immediate landing candidates, so a
-         // real support can be extended toward the next catch position.
-         var direct = new LinkedHashSet<>(targets);
-         for (BlockPos target : direct) {
-            targets.add(target.north());
-            targets.add(target.south());
-            targets.add(target.west());
-            targets.add(target.east());
-         }
          // Extend toward the landing before filling incidental corners behind
          // the player. Those side branches used to consume the tick needed for
          // a diagonal connector while the nearer prediction awaited its ack.
@@ -163,6 +220,26 @@ public final class PlacementPlanner {
       return find(candidates, eyes, reach, world);
    }
 
+   public static Placement findAimOrPlace(Vec3 feet, Vec3 motion, int bridgeLayer,
+      boolean airborne, boolean keepY, double gravity, Vec3 eyes, double reach, World world,
+      float sentYaw, float sentPitch) {
+      // Prefer a catch we can already click over spending its recovery tick
+      // aiming at a new raised step. Otherwise prepare the next visible support.
+      World readyWorld = new World() {
+         public boolean replaceable(BlockPos pos) { return world.replaceable(pos); }
+         public boolean attachable(BlockPos pos, Direction face) { return world.attachable(pos, face); }
+         public BlockHitResult raycast(Vec3 from, Vec3 to) { return world.raycast(from, to); }
+         public boolean supportsLanding(BlockPos pos) { return world.supportsLanding(pos); }
+         public boolean rotationValid(Placement placement) {
+            return world.rotationValid(placement)
+               && lookMatchesSupport(placement, eyes, reach, sentYaw, sentPitch, world);
+         }
+      };
+      Placement ready = findStepOrCatch(feet, motion, bridgeLayer, airborne, keepY, gravity, eyes, reach, readyWorld);
+      return ready != null ? ready
+         : findStepOrCatch(feet, motion, bridgeLayer, airborne, keepY, gravity, eyes, reach, world);
+   }
+
    private static Vec3 landingPosition(Vec3 feet, Vec3 motion, double top, double gravity) {
       if (feet.y < top) return null;
       double acceleration = Double.isFinite(gravity) && gravity > 0.0 ? gravity : 0.08;
@@ -207,8 +284,16 @@ public final class PlacementPlanner {
             BlockPos support = target.relative(offset);
             Direction face = offset.getOpposite();
             if (!world.attachable(support, face)) continue;
-            Vec3 point = Vec3.atCenterOf(support).add(face.getStepX() * 0.5,
+            Vec3 center = Vec3.atCenterOf(support).add(face.getStepX() * 0.5,
                face.getStepY() * 0.5, face.getStepZ() * 0.5);
+            // A face-center-only aim falls below the support during descending
+            // movement before the next tick can use it. Upper and lateral
+            // samples keep a real, visible click available across that motion.
+            int samples = face.getAxis() == Direction.Axis.Y ? 1 : 6;
+            for (int sample = 0; sample < samples; sample++) {
+            double across = sample / 2 == 0 ? 0 : sample / 2 == 1 ? -0.3 : 0.3;
+            Vec3 point = center.add(face.getAxis() == Direction.Axis.Z ? across : 0,
+               sample % 2 * 0.47, face.getAxis() == Direction.Axis.X ? across : 0);
             double distance = eyes.distanceToSqr(point);
             if (distance > reach * reach || distance >= nearestDistance) continue;
             // Trace just inside the support so an exact face boundary cannot return MISS.
@@ -220,6 +305,7 @@ public final class PlacementPlanner {
             if (!world.rotationValid(placement)) continue;
             nearest = placement;
             nearestDistance = distance;
+            }
          }
          if (nearest != null) return nearest;
       }

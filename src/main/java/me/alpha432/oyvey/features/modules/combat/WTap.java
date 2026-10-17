@@ -7,7 +7,8 @@ import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.mixin.render.accessor.ClientInputAccessor;
 import net.minecraft.client.player.ClientInput;
 import net.minecraft.world.entity.player.Input;
-import net.minecraft.world.phys.Vec2;
+import me.alpha432.oyvey.util.KeyboardMovement;
+import me.alpha432.oyvey.util.SilentRotationMath;
 
 public class WTap extends Module {
    public final Setting<Integer> duration = this.num("Duration", 1, 1, 5);
@@ -66,10 +67,9 @@ public class WTap extends Module {
       this.countdown--;
       this.stopApplied = true;
       Input keys = input.keyPresses;
-      Vec2 movement = input.getMoveVector();
-      float forward = Math.min(0.0F, movement.y);
       input.keyPresses = new Input(false, keys.backward(), keys.left(), keys.right(), keys.jump(), keys.shift(), false);
-      ((ClientInputAccessor)input).oyvey$setMoveVector(new Vec2(movement.x, forward).normalized());
+      ((ClientInputAccessor)input).oyvey$setMoveVector(
+         KeyboardMovement.vector(SilentRotationMath.correctMovement(input.keyPresses, 0, 0)));
       mc.player.setSprinting(false);
    }
 }

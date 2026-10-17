@@ -19,12 +19,15 @@ import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.movement.SprintModule;
 import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.util.SilentRotationMath;
+import me.alpha432.oyvey.util.TransmittedRotation;
 import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.manager.RecordedRotationManager;
 import me.alpha432.oyvey.mixin.render.accessor.ClientInputAccessor;
+import me.alpha432.oyvey.mixin.render.accessor.LocalPlayerRotationAccessor;
 import net.minecraft.client.player.ClientInput;
 import net.minecraft.client.AttackIndicatorStatus;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundSwingPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.tags.ItemTags;
@@ -64,9 +67,10 @@ public class KillauraRecode extends Module {
    public final Setting<Integer> apsMin = this.register(new Setting<>("APSMin", 9, 1, 20, v -> this.apsRand.getValue()));
    public final Setting<Integer> apsMax = this.register(new Setting<>("APSMax", 14, 1, 20, v -> this.apsRand.getValue()));
    public final Setting<Integer> aps = this.register(new Setting<>("APS", 12, 1, 20, v -> !this.apsRand.getValue()));
-   public final Setting<KillauraRecode.RotationMode> rotMode = this.register(new Setting<>("RotationMode", KillauraRecode.RotationMode.SMOOTH));
+   public final Setting<KillauraRecode.RotationMode> rotMode = this.register(new Setting<>("RotationMode", KillauraRecode.RotationMode.INSTANT));
    public final Setting<Float> rotSpeed = this.register(
-      new Setting<>("RotSpeed", 3.5F, 0.5F, 15.0F, v -> this.grim.getValue() || this.rotMode.getValue() == KillauraRecode.RotationMode.SMOOTH)
+      new Setting<>("RotSpeed", 3.5F, 0.5F, 15.0F, v -> this.rotMode.getValue() != RotationMode.INSTANT
+         && (this.grim.getValue() || this.rotMode.getValue() == RotationMode.SMOOTH))
    );
    public final Setting<Float> predictTicks = this.register(
       new Setting<>("PredictTicks", 1.5F, 0.0F, 4.0F, v -> this.rotMode.getValue() == KillauraRecode.RotationMode.PREDICT)
@@ -133,6 +137,7 @@ public class KillauraRecode extends Module {
    private float smoothPitch = 0.0F;
    private float sentYaw = 0.0F;
    private float sentPitch = 0.0F;
+   private final TransmittedRotation transmittedRotation = new TransmittedRotation();
    private boolean hasSentRot = false;
    private int sentTargetId = -1;
    private float[] targetRots = null;
@@ -163,6 +168,10 @@ public class KillauraRecode extends Module {
    private float recordedPitchError = 0.0F;
    private KillauraRecode.RotationMode lastRotationMode = null;
    private boolean grimSprintAllowed = true;
+   private int resumeAfterCorrectionTick;
+   private String lastAttackTrace = "none";
+   private String lastMovementTrace = "none";
+   private String lastInputTrace = "none";
 
    public KillauraRecode() {
       super("KillauraRecode", "Advanced KillAura with smooth rotations, prediction, and wall checks.", Module.Category.COMBAT);
@@ -196,12 +205,18 @@ public class KillauraRecode extends Module {
       this.recordedPitchError = 0.0F;
       this.lastRotationMode = null;
       this.grimSprintAllowed = true;
+      this.resumeAfterCorrectionTick = 0;
+      this.lastAttackTrace = "none";
+      this.lastMovementTrace = "none";
+      this.lastInputTrace = "none";
       if (mc.player != null) {
          this.smoothYaw = mc.player.getYRot();
          this.smoothPitch = mc.player.getXRot();
-         this.sentYaw = this.smoothYaw;
-         this.sentPitch = this.smoothPitch;
+         LocalPlayerRotationAccessor player = (LocalPlayerRotationAccessor)mc.player;
+         this.sentYaw = player.oyvey$getLastSentYaw();
+         this.sentPitch = player.oyvey$getLastSentPitch();
       }
+      this.transmittedRotation.reset(this.sentYaw, this.sentPitch);
    }
 
    @Override
@@ -232,7 +247,9 @@ public class KillauraRecode extends Module {
 
    @Subscribe
    public void onUpdateWalkingPlayer(UpdateWalkingPlayerEvent event) {
+      if (event.getStage() == Stage.POST) return;
       if (mc.level != null && mc.player != null) {
+         if (mc.player.tickCount < this.resumeAfterCorrectionTick) return;
          Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
          if (scaffold != null && scaffold.ownsRotation()) {
             // One rotation must drive physics, input and serialization for a tick.
@@ -267,23 +284,6 @@ public class KillauraRecode extends Module {
             if (this.targetRots != null && this.isGrimMovementCorrectionConfigured()) {
                OyVey.rotationManager.setPlayerRotations(this.targetRots[0], this.targetRots[1]);
             }
-         } else if (event.getStage() == Stage.POST) {
-            isRotating = false;
-            if (this.hasSaved && mc.player != null) {
-               OyVey.rotationManager.setPlayerRotations(this.savedYaw, this.savedPitch);
-            }
-
-            if (this.targetRots != null) {
-               this.sentYaw = this.targetRots[0];
-               this.sentPitch = this.targetRots[1];
-               this.hasSentRot = true;
-               this.sentTargetId = this.currentTarget == null ? -1 : this.currentTarget.getId();
-            } else {
-               this.hasSentRot = false;
-               this.sentTargetId = -1;
-            }
-
-            this.hasSaved = false;
          } else if (event.getStage() == Stage.PRE) {
             // Rotation serialization must not change movement or sprint state
             // after vanilla has already calculated this tick's displacement.
@@ -292,6 +292,65 @@ public class KillauraRecode extends Module {
             }
          }
       }
+   }
+
+   @Subscribe(priority = -900)
+   public void onWalkingPost(UpdateWalkingPlayerEvent event) {
+      if (event.getStage() != Stage.POST) return;
+      isRotating = false;
+      if (this.hasSaved && mc.player != null) {
+         float yaw = this.sentYaw + Mth.wrapDegrees(this.savedYaw - this.sentYaw);
+         OyVey.rotationManager.setPlayerRotations(yaw, this.savedPitch);
+      }
+      this.hasSaved = false;
+   }
+
+   @Subscribe(priority = -1000)
+   private void onMovementPacket(PacketEvent.Send event) {
+      if (event.isCancelled() || !(event.getPacket() instanceof ServerboundMovePlayerPacket movement)) return;
+      int intendedTarget = this.hasSaved && this.targetRots != null && this.currentTarget != null
+         ? this.currentTarget.getId() : -1;
+      this.transmittedRotation.record(movement, false, intendedTarget,
+         this.targetRots == null ? this.sentYaw : this.targetRots[0],
+         this.targetRots == null ? this.sentPitch : this.targetRots[1]);
+      this.sentYaw = this.transmittedRotation.yaw();
+      this.sentPitch = this.transmittedRotation.pitch();
+      this.sentTargetId = this.transmittedRotation.targetId();
+      this.hasSentRot = this.sentTargetId >= 0;
+      // A teleport acknowledgment is also a movement packet; preserve the
+      // preceding combat movement rather than replacing it with the correction.
+      if (intendedTarget >= 0 && mc.player != null) {
+         this.lastMovementTrace = "tick=" + mc.player.tickCount + " look=" + this.sentYaw + "," + this.sentPitch
+            + " ground=" + movement.isOnGround() + " sprint=" + mc.player.isSprinting()
+            + " motion=" + mc.player.getDeltaMovement();
+      }
+   }
+
+   public void recordInputTrace(ClientInput input) {
+      if (!this.isEnabled() || mc.player == null) return;
+      this.lastInputTrace = "tick=" + mc.player.tickCount + " physicsLook=" + mc.player.getYRot() + "," + mc.player.getXRot()
+         + " keys=" + input.keyPresses + " vector=" + input.getMoveVector().x + "," + input.getMoveVector().y
+         + " normalized=" + me.alpha432.oyvey.util.KeyboardMovement.normalizesDiagonals();
+   }
+
+   public void onServerCorrection() {
+      if (!this.isEnabled() || mc.player == null) return;
+      OyVey.LOGGER.warn("[CombatRollback] attack=[{}] movement=[{}] input=[{}]",
+         this.lastAttackTrace, this.lastMovementTrace, this.lastInputTrace);
+      // Vanilla has already applied and acknowledged the server's position.
+      // Discard old aim rather than restoring the pre-correction camera next tick.
+      this.hasSaved = false;
+      this.hasSentRot = false;
+      this.sentTargetId = -1;
+      this.targetRots = null;
+      this.currentTarget = null;
+      isRotating = false;
+      this.sentYaw = this.smoothYaw = mc.player.getYRot();
+      this.sentPitch = this.smoothPitch = mc.player.getXRot();
+      this.transmittedRotation.reset(this.sentYaw, this.sentPitch);
+      this.grimSprintAllowed = true;
+      this.resumeAfterCorrectionTick = mc.player.tickCount + 2;
+      OyVey.rotationManager.clearServerRotations();
    }
 
    private void updateCombat() {
@@ -394,11 +453,6 @@ public class KillauraRecode extends Module {
          if (this.currentTarget.getId() != previousTargetId) {
             this.recordedPatternIndex = 0;
             this.resetRecordedPlayback();
-         }
-
-         if (!this.hasSentRot) {
-            this.sentYaw = mc.player.getYRot();
-            this.sentPitch = mc.player.getXRot();
          }
 
          this.targetRots = this.buildRotations(this.computeAimPoint(this.currentTarget));
@@ -627,6 +681,14 @@ public class KillauraRecode extends Module {
    private float[] buildRotations(float[] raw) {
       float tYaw = raw[0];
       float tPitch = raw[1];
+      if (this.rotMode.getValue() == RotationMode.INSTANT) {
+         float yaw = this.sentYaw + Mth.wrapDegrees(tYaw - this.sentYaw);
+         float[] rotation = this.grim.getValue() || this.gcdFix.getValue()
+            ? this.quantizeRotation(yaw, tPitch) : new float[]{yaw, Mth.clamp(tPitch, -90, 90)};
+         this.smoothYaw = rotation[0];
+         this.smoothPitch = rotation[1];
+         return rotation;
+      }
       if (this.grim.getValue()) {
          // Step from the last sent angle so changing modes cannot snap the
          // server rotation to an old smoothing or recorded-pattern state.
@@ -756,8 +818,16 @@ public class KillauraRecode extends Module {
    }
 
    private void performAttack(Entity target) {
+      var beforeMotion = mc.player.getDeltaMovement();
+      boolean beforeSprint = mc.player.isSprinting();
+      float strength = mc.player.getAttackStrengthScale(0);
+      boolean emptyHand = mc.player.getMainHandItem().isEmpty();
+      boolean sword = mc.player.getMainHandItem().is(ItemTags.SWORDS);
       WTap.onAttack();
       mc.gameMode.attack(mc.player, target);
+      this.lastAttackTrace = "tick=" + mc.player.tickCount + " empty=" + emptyHand + " sword=" + sword
+         + " strength=" + strength + " sprint=" + beforeSprint + "->" + mc.player.isSprinting()
+         + " motion=" + beforeMotion + "->" + mc.player.getDeltaMovement();
       if (this.armSwing.getValue()) {
          mc.player.swing(InteractionHand.MAIN_HAND);
       } else {
@@ -1015,11 +1085,10 @@ public class KillauraRecode extends Module {
          originalKeys.sprint() && this.grimSprintAllowed
       );
 
-      // This is the same normalized pre-physics vector produced by
-      // KeyboardInput.tick(). Vanilla subsequently applies its modern input
-      // transform, acceleration, collisions, block friction, and 0.91 drag.
+      // Legacy protocols keep diagonals raw until after slowdown. Normalizing
+      // here would change acceleration compared with Via's native input path.
       ((ClientInputAccessor)input).oyvey$setMoveVector(
-         new Vec2(corrected.normalizedSideways(), corrected.normalizedForward())
+         me.alpha432.oyvey.util.KeyboardMovement.vector(corrected)
       );
       if (!this.grimSprintAllowed) {
          mc.player.setSprinting(false);

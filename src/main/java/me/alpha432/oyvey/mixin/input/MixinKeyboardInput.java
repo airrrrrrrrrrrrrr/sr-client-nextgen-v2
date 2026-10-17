@@ -53,5 +53,11 @@ public class MixinKeyboardInput {
       if (speed != null) {
          speed.applyVulcan2Input((ClientInput)(Object)this);
       }
+      if (scaffold != null) {
+         scaffold.enforceSprintInput((ClientInput)(Object)this);
+      }
+      if (aura != null) {
+         aura.recordInputTrace((ClientInput)(Object)this);
+      }
    }
 }

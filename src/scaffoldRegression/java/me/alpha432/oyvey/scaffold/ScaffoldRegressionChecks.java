@@ -7,7 +7,11 @@ import java.util.Set;
 import me.alpha432.oyvey.features.modules.movement.scaffold.PlacementConfirmations;
 import me.alpha432.oyvey.features.modules.movement.scaffold.PlacementPlanner;
 import me.alpha432.oyvey.features.modules.movement.scaffold.SilentHeadPose;
+import me.alpha432.oyvey.features.modules.movement.scaffold.ScaffoldMovement;
+import me.alpha432.oyvey.features.modules.movement.scaffold.BackwardBridgeRotation;
 import me.alpha432.oyvey.util.SilentRotationMath;
+import me.alpha432.oyvey.util.TransmittedRotation;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import me.alpha432.oyvey.event.Stage;
 import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
 import me.alpha432.oyvey.event.system.EventBus;
@@ -18,22 +22,31 @@ import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.Vec2;
 
 public final class ScaffoldRegressionChecks {
    private static int checks;
 
    public static void main(String[] args) {
       placementGeometry();
+      placementLookOrdering();
       jumpingCatchPlanning();
       stepUpOrKeepLayer();
       landingDirectedStepUp();
       pendingLandingDoesNotScatterBlocks();
       forwardJumpLandings();
+      sprintingBridgeLatency();
+      sprintInputEligibility();
+      transmittedAttackLook();
       predictionAcknowledgements();
       rotationContinuity();
       silentHeadRendering();
       cameraRestorationOrder();
       movementAndSprint();
+      legacyInputEncoding();
+      backwardBridge();
+      jumpingBridgeHeight();
+      backwardTurnEasing();
       System.out.println("Scaffold regression checks passed: " + checks);
    }
 
@@ -87,6 +100,27 @@ public final class ScaffoldRegressionChecks {
       world.confirmations.predict(support, 20);
       world.confirmations.clear();
       require(!world.confirmations.isPending(support), "changing worlds clears stale sequences");
+   }
+
+   private static void placementLookOrdering() {
+      FakeWorld world = new FakeWorld();
+      world.solid.add(BlockPos.ZERO);
+      world.aimEyes = new Vec3(1.1, 2.62, 0.5);
+      world.aimYaw = -90;
+      world.aimPitch = 0;
+      world.aimSensitivity = 0.5;
+      var placement = PlacementPlanner.find(List.of(BlockPos.ZERO.east()), world.aimEyes, 4.5, world);
+      require(placement != null, "new placement can be aimed at with the upcoming look");
+      require(!PlacementPlanner.lookMatchesSupport(placement, world.aimEyes, 4.5,
+         world.aimYaw, world.aimPitch, world), "old horizontal look cannot justify a click before the aim packet");
+      var aimed = world.aimRotation(placement);
+      require(PlacementPlanner.lookMatchesSupport(placement, world.aimEyes, 4.5,
+         aimed.yaw(), aimed.pitch(), world), "next tick may place once the transmitted aim reaches the support");
+      require(PlacementPlanner.lookMatchesSupport(placement, world.aimEyes, 4.5, 90, 75, world),
+         "previous look may reach the support's top while the current click uses its side");
+      Vec3 movedEyes = world.aimEyes.add(0, 0, 2);
+      require(!PlacementPlanner.lookMatchesSupport(placement, movedEyes, 4.5,
+         aimed.yaw(), aimed.pitch(), world), "a previously valid aim is rechecked after movement");
    }
 
    private static void jumpingCatchPlanning() {
@@ -275,6 +309,7 @@ public final class ScaffoldRegressionChecks {
          boolean landed = false;
          BlockPos rejected = null;
          int rejectedAt = -1;
+         StringBuilder trajectory = new StringBuilder();
          for (int tick = 0; tick < 16; tick++) {
             if (rejected != null && tick >= rejectedAt + ackDelay) {
                world.solid.remove(rejected);
@@ -284,16 +319,20 @@ public final class ScaffoldRegressionChecks {
             Vec3 eyes = feet.add(0, 1.62, 0);
             var placement = catchOnly
                ? PlacementPlanner.find(PlacementPlanner.catchTargets(feet, motion, 0, true, true, 0.08), eyes, 4.5, world)
-               : PlacementPlanner.findStepOrCatch(feet, motion, 0, true, false, 0.08, eyes, 4.5, world);
+               : PlacementPlanner.findAimOrPlace(feet, motion, 0, true, false, 0.08, eyes, 4.5, world, sentYaw, sentPitch);
+            trajectory.append("\n").append(tick).append(": ").append(feet)
+               .append(" -> ").append(placement == null ? null : placement.target());
             if (placement != null) {
                Vec3 delta = placement.hit().getLocation().subtract(eyes);
                float yaw = (float)Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90;
                float pitch = (float)-Math.toDegrees(Math.atan2(delta.y, Math.hypot(delta.x, delta.z)));
                var rotation = SilentRotationMath.quantizeRotation(sentYaw, sentPitch, yaw, pitch, 0.5);
+               boolean ready = PlacementPlanner.lookMatchesSupport(placement, eyes, 4.5, sentYaw, sentPitch, world);
+               trajectory.append(ready ? " place" : " aim");
                sentYaw = rotation.yaw();
                sentPitch = rotation.pitch();
                var hit = world.raycast(eyes, eyes.add(Vec3.directionFromRotation(sentPitch, sentYaw).scale(4.5)));
-               if (PlacementPlanner.matchesSupport(placement, hit)) {
+               if (ready && PlacementPlanner.matchesSupport(placement, hit)) {
                   require(placement.target().getY() <= PlacementPlanner.blockLayer(feet.y),
                      "catch blocks cannot intersect the moving player's feet");
                   world.solid.add(placement.target());
@@ -306,6 +345,14 @@ public final class ScaffoldRegressionChecks {
                         rejectedSteps++;
                      }
                   }
+               }
+            } else {
+               var idleAim = PlacementPlanner.findSupportAim(
+                  PlacementPlanner.catchTargets(feet, motion, 0, true, false, 0.08), eyes, 4.5, world);
+               if (idleAim != null) {
+                  var rotation = aimAt(idleAim.getLocation(), eyes, sentYaw, sentPitch, 0.5);
+                  sentYaw = rotation.yaw();
+                  sentPitch = rotation.pitch();
                }
             }
             Vec3 next = feet.add(velocityX, velocityY, velocityZ);
@@ -329,9 +376,11 @@ public final class ScaffoldRegressionChecks {
          if (catchOnly) {
             flatLanded = landed;
          } else {
-            require(landed || speed > 0.24 && !flatLanded,
+            // Compare with the flat path under the same transmitted-look gate.
+            // Immediate clicks using unsent aim are no longer a valid baseline.
+            require(landed || !flatLanded,
                "step selection cannot lose a feasible flat catch: heading=" + heading + ", speed=" + speed
-                  + ", ackDelay=" + ackDelay + ", rejectStep=" + rejectStep);
+                  + ", ackDelay=" + ackDelay + ", rejectStep=" + rejectStep + trajectory);
          }
       }
       }
@@ -340,6 +389,154 @@ public final class ScaffoldRegressionChecks {
       }
       require(stepLandings > 0, "the combined planner can actually land on raised steps");
       require(rejectedSteps > 0, "the jump replay exercises rejected raised placements");
+   }
+
+   private static void sprintingBridgeLatency() {
+      int unprotectedFailures = 0;
+      for (double speed : new double[]{0.215, 0.30}) {
+      for (int delay : new int[]{1, 3, 5, 8}) {
+         for (int heading = 0; heading < 360; heading += 30) {
+            for (double sensitivity : new double[]{0, 0.5, 1}) {
+            for (boolean protectEdge : new boolean[]{false, true}) {
+               FakeWorld world = new FakeWorld();
+               world.aimYaw = heading;
+               world.aimSensitivity = sensitivity;
+               world.solid.add(BlockPos.ZERO);
+               Vec3 feet = new Vec3(0.5, 1, 0.5);
+               Vec3 requested = new Vec3(-Math.sin(Math.toRadians(heading)) * speed,
+                  0, Math.cos(Math.toRadians(heading)) * speed);
+               boolean fell = false;
+               int placed = 0;
+               int firstPlaced = -1;
+               for (int tick = 0; tick < 160; tick++) {
+                  world.confirmations.acknowledge(tick - delay);
+                  world.aimEyes = feet.add(0, 1.62, 0);
+                  var placement = PlacementPlanner.findAimOrPlace(feet, requested, 0, false, false,
+                     0.08, feet.add(0, 1.62, 0), 4.5, world, world.aimYaw, world.aimPitch);
+                  if (placement != null) {
+                     var rotation = world.aimRotation(placement);
+                     boolean ready = PlacementPlanner.lookMatchesSupport(placement, world.aimEyes, 4.5,
+                        world.aimYaw, world.aimPitch, world);
+                     world.aimYaw = rotation.yaw();
+                     world.aimPitch = rotation.pitch();
+                     if (ready) {
+                        world.solid.add(placement.target());
+                        world.confirmations.predict(placement.target(), tick);
+                        placed++;
+                        if (firstPlaced < 0) firstPlaced = tick;
+                     }
+                  } else {
+                     var idleAim = PlacementPlanner.findSupportAim(
+                        PlacementPlanner.catchTargets(feet, requested, 0, false, false, 0.08),
+                        world.aimEyes, 4.5, world);
+                     if (idleAim != null) {
+                        var rotation = aimAt(idleAim.getLocation(), world.aimEyes, world.aimYaw,
+                           world.aimPitch, sensitivity);
+                        world.aimYaw = rotation.yaw();
+                        world.aimPitch = rotation.pitch();
+                     } else {
+                        world.aimYaw = heading;
+                        world.aimPitch = 0;
+                     }
+                  }
+                  AABB box = new AABB(feet.x - 0.3, feet.y, feet.z - 0.3,
+                     feet.x + 0.3, feet.y + 1.8, feet.z + 0.3);
+                  boolean sneak = protectEdge && ScaffoldMovement.needsEdgeSneak(box,
+                     requested, new Vec2(0, 1), heading, 0.13, 0.6,
+                     probe -> world.solid.stream().noneMatch(pos -> new AABB(pos).intersects(probe)));
+                  // Replay vanilla Player.maybeBackOffFromEdge's 0.05 steps
+                  // only when actual sneak input will be sent to the server.
+                  double x = requested.x, z = requested.z;
+                  if (sneak) {
+                     while (x != 0 && !hasFooting(feet.add(x, 0, 0), world)) x = backOff(x);
+                     while (z != 0 && !hasFooting(feet.add(0, 0, z), world)) z = backOff(z);
+                     while (x != 0 && z != 0 && !hasFooting(feet.add(x, 0, z), world)) {
+                        x = backOff(x);
+                        z = backOff(z);
+                     }
+                  }
+                  feet = feet.add(x, 0, z);
+                  if (!hasFooting(feet, world)) {
+                     fell = true;
+                     break;
+                  }
+               }
+               if (protectEdge) {
+                  require(!fell, "walking/sprinting bridge retains footing while aiming and awaiting ack: speed="
+                     + speed + ", delay=" + delay + ", heading=" + heading);
+                  require(placed >= 8, "edge protection resumes placement rather than freezing the bridge: delay="
+                     + delay + ", heading=" + heading + ", placed=" + placed + ", feet=" + feet + ", blocks=" + world.solid);
+                  require(firstPlaced >= 0 && firstPlaced <= 12,
+                     "cold-start scaffold must actually begin placing in walking and sprinting modes");
+               } else if (fell) unprotectedFailures++;
+            }
+            }
+         }
+      }
+      }
+      require(unprotectedFailures > 0, "reproduce sprint outrunning unacknowledged bridge support");
+   }
+
+   private static boolean hasFooting(Vec3 feet, FakeWorld world) {
+      return world.solid.stream().anyMatch(pos -> pos.getY() == 0
+         && feet.x + 0.3 > pos.getX() && feet.x - 0.3 < pos.getX() + 1
+         && feet.z + 0.3 > pos.getZ() && feet.z - 0.3 < pos.getZ() + 1);
+   }
+
+   private static double backOff(double value) {
+      return Math.abs(value) <= 0.05 ? 0 : value - Math.signum(value) * 0.05;
+   }
+
+   private static SilentRotationMath.Rotation aimAt(Vec3 point, Vec3 eyes, float yaw, float pitch, double sensitivity) {
+      Vec3 delta = point.subtract(eyes);
+      float targetYaw = (float)Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90;
+      float targetPitch = (float)-Math.toDegrees(Math.atan2(delta.y, Math.hypot(delta.x, delta.z)));
+      return SilentRotationMath.quantizeRotation(yaw, pitch, targetYaw, targetPitch, sensitivity);
+   }
+
+   private static void sprintInputEligibility() {
+      for (int forward = -1; forward <= 1; forward++) {
+         for (int sideways = -1; sideways <= 1; sideways++) {
+            for (boolean sneak : new boolean[]{false, true}) {
+               Input keys = new Input(forward > 0, forward < 0, sideways > 0, sideways < 0, false, sneak, true);
+               require(ScaffoldMovement.forwardSprint(keys) == (forward > 0 && !sneak),
+                  "only forward, non-sneaking input can sprint, including diagonals");
+            }
+         }
+      }
+      require(!ScaffoldMovement.forwardSprint(new Input(true, true, false, false, false, false, true)),
+         "opposing forward/back keys cannot retain sprint");
+      AABB box = new AABB(0.2, 1, 0.2, 0.8, 2.8, 0.8);
+      require(!ScaffoldMovement.needsEdgeSneak(box, new Vec3(0.3, 0, 0), new Vec2(0, 1),
+         -90, 0.13, 0.6, probe -> false), "flat supported ground never injects sneak");
+      require(ScaffoldMovement.needsEdgeSneak(box, new Vec3(0.3, 0, 0), new Vec2(0, 1),
+         -90, 0.13, 0.6, probe -> true), "an unsupported sprint step requests real sneak input");
+      Input backwards = new Input(false, true, false, false, false, false, true);
+      Input stopped = Input.EMPTY;
+      Input forwards = new Input(true, false, false, false, false, false, true);
+      require(!ScaffoldMovement.forwardSprint(backwards) && !ScaffoldMovement.forwardSprint(stopped)
+         && ScaffoldMovement.forwardSprint(forwards), "sprint follows fresh input when placement rotation is released");
+   }
+
+   private static void transmittedAttackLook() {
+      TransmittedRotation look = new TransmittedRotation();
+      look.reset(720, 15);
+      require(look.targetId() == -1, "initial camera baseline cannot authorize an attack");
+      look.record(new ServerboundMovePlayerPacket.Rot(750, 30, true, false), true, 42, 750, 30);
+      require(look.yaw() == 720 && look.pitch() == 15 && look.targetId() == -1,
+         "cancelled movement cannot become an assumed transmitted attack look");
+      look.record(new ServerboundMovePlayerPacket.Rot(750, 30, true, false), false, 42, 750, 30);
+      require(look.targetId() == 42 && look.yaw() == 750, "an outgoing aimed look belongs to its prepared target");
+      look.record(new ServerboundMovePlayerPacket.Pos(1, 64, 2, true, false), false, 42, 750, 30);
+      require(look.targetId() == 42 && look.pitch() == 30, "position-only movement retains the preceding look");
+      look.record(new ServerboundMovePlayerPacket.StatusOnly(true, false), false, 43, 770, 30);
+      require(look.targetId() == -1, "an unsent target rotation cannot be assumed after a status-only packet");
+      look.record(new ServerboundMovePlayerPacket.Rot(760, 40, true, false), false, 42, 750, 30);
+      require(look.targetId() == -1 && look.yaw() == 760, "another module's overwritten look cannot authorize an attack");
+      look.record(new ServerboundMovePlayerPacket.Rot(30, 30, true, false), false, 42, 750, 30);
+      require(look.targetId() == 42 && look.yaw() == 30, "equivalent turns retain the actual transmitted numeric baseline");
+      look.record(new ServerboundMovePlayerPacket.Rot(90, 80, true, false), false, -1, 90, 80);
+      require(look.targetId() == -1, "a scaffold or ordinary camera tick releases the combat look");
    }
 
    private static void movementAndSprint() {
@@ -368,6 +565,147 @@ public final class ScaffoldRegressionChecks {
       require(backwards.forward() < 0, "a backwards-facing scaffold needs backwards input, which cannot sprint");
       var forwards = SilentRotationMath.correctMovement(sprintForward, 0, 0);
       require(forwards.forward() > 0, "sprint remains possible when corrected input goes forward");
+   }
+
+   private static void backwardBridge() {
+      Input forward = new Input(true, false, false, false, false, false, false);
+      Input idle = new Input(false, false, false, false, false, false, false);
+      for (int heading = 0; heading < 360; heading += 15) {
+      for (double sensitivity : new double[]{0, 0.5, 1}) {
+      for (int ackDelay : new int[]{1, 3, 8}) {
+         BackwardBridgeRotation rotation = new BackwardBridgeRotation();
+         FakeWorld world = new FakeWorld();
+         world.allowPredictedSupports = true;
+         world.solid.add(BlockPos.ZERO);
+         Vec3 feet = new Vec3(0.5, 1, 0.5);
+         Vec3 requested = new Vec3(-Math.sin(Math.toRadians(heading)) * 0.30, 0,
+            Math.cos(Math.toRadians(heading)) * 0.30);
+         float sentYaw = heading, sentPitch = 0;
+         boolean primed = false;
+         int placed = 0;
+         int unsupportedTicks = 0;
+         for (int tick = 0; tick < 180; tick++) {
+            world.confirmations.acknowledge(tick - ackDelay);
+            Vec3 eyes = feet.add(0, 1.62, 0);
+            var candidates = PlacementPlanner.catchTargets(feet, requested, 0, false, false, 0.08);
+            var backward = rotation.next(forward, heading, sentYaw, sentPitch, 82, sensitivity);
+            float pitch = PlacementPlanner.backwardPitch(candidates, eyes, 4.5, backward.yaw(), sentPitch, sensitivity, world);
+            var look = rotation.next(forward, heading, sentYaw, sentPitch, pitch, sensitivity);
+            var placement = PlacementPlanner.findAlongLook(candidates, eyes, 4.5, sentYaw, sentPitch, world);
+            if (placement != null && primed) look = new SilentRotationMath.Rotation(sentYaw, sentPitch);
+            primed |= Math.abs(net.minecraft.util.Mth.wrapDegrees(rotation.heading(forward, heading) - look.yaw())) < 1
+               && look.pitch() >= 70;
+            require(Math.abs(net.minecraft.util.Mth.wrapDegrees(look.yaw() - sentYaw)) < 63.4,
+               "backward turns advance continuously instead of snapping at placement");
+            require(Math.abs(look.pitch() - sentPitch) < 10.4, "pitch changes are gradual at bridge corners");
+            // Match native input/action order: click from the known position
+            // and transmitted look, physics, then the normal movement packet.
+            boolean clicked = placement != null && PlacementPlanner.lookMatchesSupport(placement, eyes, 4.5,
+               look.yaw(), look.pitch(), world);
+            Vec3 clickEyes = eyes;
+            if (clicked) {
+               world.solid.add(placement.target());
+               world.confirmations.predict(placement.target(), tick);
+               placed++;
+            }
+            if (primed) feet = feet.add(Vec3.directionFromRotation(0, look.yaw()).scale(-0.30));
+            world.playerBox = new AABB(feet.x - 0.3, feet.y, feet.z - 0.3, feet.x + 0.3, feet.y + 1.8, feet.z + 0.3);
+            eyes = feet.add(0, 1.62, 0);
+            candidates = PlacementPlanner.catchTargets(feet, requested, 0, false, false, 0.08);
+            pitch = PlacementPlanner.backwardPitch(candidates, eyes, 4.5, look.yaw(), sentPitch, sensitivity, world);
+            float refinedPitch = SilentRotationMath.quantizeRotation(sentYaw, sentPitch, look.yaw(),
+               look.pitch() + net.minecraft.util.Mth.clamp(pitch - look.pitch(), -10, 10), sensitivity).pitch();
+            sentYaw = look.yaw();
+            sentPitch = !clicked || PlacementPlanner.lookMatchesSupport(placement, clickEyes, 4.5,
+               sentYaw, refinedPitch, world) ? refinedPitch : look.pitch();
+            // Stepping beyond an edge initially has zero vertical velocity.
+            // A reachable click at this position must be ready before the next
+            // physics tick, when falling would otherwise start.
+            var nextClick = PlacementPlanner.findAlongLook(candidates, eyes, 4.5, sentYaw, sentPitch, world);
+            unsupportedTicks = hasFooting(feet, world) ? 0 : unsupportedTicks + 1;
+            require(unsupportedTicks <= 1, "prepare the next click before a second unsupported physics tick");
+            require(hasFooting(feet, world) || nextClick != null, "backward bridging without sneak preserves footing: heading=" + heading
+               + " sensitivity=" + sensitivity + " tick=" + tick + " feet=" + feet + " pitch=" + sentPitch);
+         }
+         require(placed >= 8, "held look must keep placing: heading=" + heading + " sensitivity=" + sensitivity
+            + " delay=" + ackDelay + " placed=" + placed + " feet=" + feet);
+         float heldYaw = sentYaw, heldPitch = sentPitch;
+         var held = rotation.next(idle, heading + 90, sentYaw, sentPitch, sentPitch, sensitivity);
+         require(held.yaw() == heldYaw && held.pitch() == heldPitch,
+            "idle gaps retain the bridge look even when the camera moves");
+      }
+      }
+      }
+   }
+
+   private static void jumpingBridgeHeight() {
+      FakeWorld world = new FakeWorld();
+      world.allowPredictedSupports = true;
+      world.solid.add(BlockPos.ZERO);
+      Vec3 feet = new Vec3(0.5, 2.05, 0.5);
+      world.playerBox = new AABB(0.2, feet.y, 0.2, 0.8, feet.y + 1.8, 0.8);
+      Vec3 eyes = feet.add(0, 1.62, 0);
+      int freeLayer = PlacementPlanner.bridgeLayer(feet.y, 0, false);
+      int lockedLayer = PlacementPlanner.bridgeLayer(feet.y, 0, true);
+      require(freeLayer == 1 && lockedLayer == 0, "only KeepY locks a jumping bridge to its original height");
+      var raised = PlacementPlanner.findAlongLook(
+         PlacementPlanner.catchTargets(feet, Vec3.ZERO, freeLayer, true, true, 0.08), eyes, 4.5, 180.5F, 82, world);
+      require(raised != null && raised.target().equals(new BlockPos(0, 1, 0)),
+         "a normal jump can place the raised block after the feet clear it");
+      require(PlacementPlanner.findAlongLook(
+         PlacementPlanner.catchTargets(feet, Vec3.ZERO, lockedLayer, true, false, 0.08), eyes, 4.5, 180.5F, 82, world) == null,
+         "KeepY forbids the same raised placement");
+      require(PlacementPlanner.bridgeLayer(1.75, 0, false) == 0,
+         "ascending feet must clear a full block before raising the placement layer");
+   }
+
+   private static void backwardTurnEasing() {
+      var rotation = new BackwardBridgeRotation();
+      Input forward = new Input(true, false, false, false, false, false, false);
+      float yaw = 0, pitch = 0, previousDelta = 180;
+      for (int tick = 0; tick < 10; tick++) {
+         var next = rotation.next(forward, 0, yaw, pitch, 82, 0.5);
+         float delta = Math.abs(net.minecraft.util.Mth.wrapDegrees(next.yaw() - yaw));
+         require(delta < previousDelta, "a turn eases toward its heading rather than repeating fixed yaw deltas");
+         previousDelta = delta;
+         yaw = next.yaw();
+         pitch = next.pitch();
+      }
+   }
+
+   private static void legacyInputEncoding() {
+      Input forward = new Input(true, false, false, false, false, false, false);
+      var diagonal = SilentRotationMath.correctMovement(forward, 0, 45);
+      require(diagonal.sideways() != 0 && diagonal.forward() != 0,
+         "straight camera input can require diagonal corrected input");
+      for (int sideways = -1; sideways <= 1; sideways++) {
+         for (int ahead = -1; ahead <= 1; ahead++) {
+            Input keys = new Input(ahead > 0, ahead < 0, sideways > 0, sideways < 0, false, false, false);
+            var corrected = SilentRotationMath.correctMovement(keys, 0, 0);
+            Vec2 legacy = corrected.inputVector(false);
+            Vec2 modern = corrected.inputVector(true);
+            require(legacy.x == sideways && legacy.y == ahead,
+               "legacy keyboard vectors retain raw discrete components");
+            require(Math.abs(Math.hypot(modern.x, modern.y) - (ahead == 0 && sideways == 0 ? 0 : 1)) < 0.000001,
+               "modern keyboard vectors normalize diagonals before physics");
+            for (float slowdown : new float[]{0.98F, 0.294F, 0.196F}) {
+               Vec3 rawAfterSlowdown = new Vec3(sideways * slowdown, 0, ahead * slowdown);
+               Vec3 expected = rawAfterSlowdown.lengthSqr() > 1 ? rawAfterSlowdown.normalize() : rawAfterSlowdown;
+               Vec3 actual = new Vec3(legacy.x * slowdown, 0, legacy.y * slowdown);
+               if (actual.lengthSqr() > 1) actual = actual.normalize();
+               require(expected.distanceTo(actual) < 0.0000001,
+                  "legacy movement matches native slowdown-before-normalization for all keys");
+            }
+         }
+      }
+      Vec2 rawDiagonal = diagonal.inputVector(false);
+      Vec2 normalizedDiagonal = diagonal.inputVector(true);
+      require(Math.abs(rawDiagonal.x) == 1 && Math.abs(rawDiagonal.y) == 1,
+         "straight-to-diagonal correction also uses legacy encoding");
+      require(Math.hypot(normalizedDiagonal.x * 0.98F, normalizedDiagonal.y * 0.98F) < 0.981,
+         "early normalization reproduces the incorrect two-percent diagonal slowdown");
+      require(new Vec3(rawDiagonal.x * 0.98F, 0, rawDiagonal.y * 0.98F).normalize().length() > 0.999,
+         "legacy diagonal acceleration remains full length after native normalization");
    }
 
    private static void silentHeadRendering() {
@@ -500,13 +838,29 @@ public final class ScaffoldRegressionChecks {
       final Set<BlockPos> solid = new HashSet<>();
       final PlacementConfirmations confirmations = new PlacementConfirmations();
       int maxRotationLayer = Integer.MAX_VALUE;
+      Vec3 aimEyes;
+      float aimYaw, aimPitch;
+      double aimSensitivity;
+      boolean allowPredictedSupports;
+      AABB playerBox;
+
+      SilentRotationMath.Rotation aimRotation(PlacementPlanner.Placement placement) {
+         Vec3 delta = placement.hit().getLocation().subtract(this.aimEyes);
+         float yaw = (float)Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90;
+         float pitch = (float)-Math.toDegrees(Math.atan2(delta.y, Math.hypot(delta.x, delta.z)));
+         return SilentRotationMath.quantizeRotation(this.aimYaw, this.aimPitch, yaw, pitch, this.aimSensitivity);
+      }
 
       public boolean rotationValid(PlacementPlanner.Placement placement) {
-         return placement.target().getY() <= this.maxRotationLayer;
+         if (placement.target().getY() > this.maxRotationLayer) return false;
+         if (this.aimEyes == null) return true;
+         var rotation = this.aimRotation(placement);
+         return PlacementPlanner.matchesSupport(placement, this.raycast(this.aimEyes,
+            this.aimEyes.add(Vec3.directionFromRotation(rotation.pitch(), rotation.yaw()).scale(4.5))));
       }
 
       public boolean replaceable(BlockPos pos) {
-         return !this.solid.contains(pos);
+         return !this.solid.contains(pos) && (this.playerBox == null || !this.playerBox.intersects(new AABB(pos)));
       }
 
       public boolean supportsLanding(BlockPos pos) {
@@ -514,10 +868,18 @@ public final class ScaffoldRegressionChecks {
       }
 
       public boolean attachable(BlockPos pos, Direction face) {
-         return this.solid.contains(pos) && !this.confirmations.isPending(pos);
+         return this.solid.contains(pos) && (this.allowPredictedSupports || !this.confirmations.isPending(pos));
       }
 
       public BlockHitResult raycast(Vec3 from, Vec3 to) {
+         if (this.allowPredictedSupports) {
+            // Use Minecraft's voxel traversal for exact diagonal corner ties,
+            // just like ClientLevel.clip in the live placement path.
+            return net.minecraft.world.level.BlockGetter.traverseBlocks(from, to, this,
+               (world, pos) -> world.solid.contains(pos)
+                  ? net.minecraft.world.phys.shapes.Shapes.block().clip(from, to, pos) : null,
+               world -> null);
+         }
          BlockHitResult closest = null;
          for (BlockPos pos : this.solid) {
             AABB box = new AABB(pos);

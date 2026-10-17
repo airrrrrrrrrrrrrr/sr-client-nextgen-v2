@@ -2,6 +2,7 @@ package me.alpha432.oyvey.util;
 
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Input;
+import net.minecraft.world.phys.Vec2;
 
 /**
  * Pure math shared by the silent-rotation and movement-input pipelines.
@@ -56,7 +57,7 @@ public final class SilentRotationMath {
     * <p>Modern clients send seven booleans, not an arbitrary analog vector.
     * Restricting the search to {-1, 0, 1} for forward and sideways makes the
     * local acceleration exactly reconstructible from the packet. Diagonal
-    * inputs are normalized exactly as {@code KeyboardInput.tick()} does.</p>
+    * vector encoding is selected separately to match the active protocol.</p>
     */
    public static Movement correctMovement(Input keys, float cameraYaw, float serverYaw) {
       int originalForward = bool(keys.forward()) - bool(keys.backward());
@@ -125,6 +126,12 @@ public final class SilentRotationMath {
 
    public record Movement(int sideways, int forward, float normalizedSideways, float normalizedForward) {
       private static final Movement ZERO = new Movement(0, 0, 0.0F, 0.0F);
+
+      public Vec2 inputVector(boolean normalizeDiagonals) {
+         return normalizeDiagonals
+            ? new Vec2(this.normalizedSideways, this.normalizedForward)
+            : new Vec2(this.sideways, this.forward);
+      }
    }
 
    private record WorldDirection(float x, float z) {

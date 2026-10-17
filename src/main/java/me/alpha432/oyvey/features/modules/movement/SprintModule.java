@@ -54,6 +54,10 @@ public class SprintModule extends Module {
       } else if (!mc.player.isFallFlying() && !mc.player.isPassenger() && !mc.player.horizontalCollision) {
          float strafe = mc.player.input.getMoveVector().x;
          float forward = mc.player.input.getMoveVector().y;
+         if (scaffold != null && scaffold.isEnabled()) {
+            Input keys = mc.player.input.keyPresses;
+            return keys.forward() && !keys.backward() && !keys.shift();
+         }
          if (grimAura || this.mode.getValue() == SprintModule.Mode.GRIM) {
             return forward >= 0.8F;
          }
