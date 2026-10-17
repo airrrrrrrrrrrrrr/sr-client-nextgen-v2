@@ -60,10 +60,10 @@ public class EventBus {
       int i = 0;
 
       for (Listener listener : registry) {
-         i++;
          if (target.priority() > listener.priority()) {
             break;
          }
+         i++;
       }
 
       registry.add(i, target);

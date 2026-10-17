@@ -36,6 +36,7 @@
     "render.MixinSubmitNodeStorage",
     "render.accessor.EntityRenderDispatcherAccessor",
     "render.accessor.ClientInputAccessor",
+    "render.accessor.LocalPlayerRotationAccessor",
     "render.accessor.MinecraftAccessor",
     "render.accessor.RenderSetupAccessor",
     "render.accessor.RenderTypeAccessor",

@@ -17,6 +17,8 @@ import me.alpha432.oyvey.event.system.Subscribe;
 import me.alpha432.oyvey.features.commands.Command;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.movement.SprintModule;
+import me.alpha432.oyvey.features.modules.movement.Scaffold;
+import me.alpha432.oyvey.util.SilentRotationMath;
 import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.manager.RecordedRotationManager;
 import me.alpha432.oyvey.mixin.render.accessor.ClientInputAccessor;
@@ -209,6 +211,9 @@ public class KillauraRecode extends Module {
       if (this.hasSaved && mc.player != null) {
          OyVey.rotationManager.setPlayerRotations(this.savedYaw, this.savedPitch);
       }
+      if (mc.player != null) {
+         this.finishSilentRotation();
+      }
 
       if (mc.player != null && mc.gameMode != null && this.autoBlockActive && mc.player.isUsingItem()) {
          mc.gameMode.releaseUsingItem(mc.player);
@@ -228,6 +233,19 @@ public class KillauraRecode extends Module {
    @Subscribe
    public void onUpdateWalkingPlayer(UpdateWalkingPlayerEvent event) {
       if (mc.level != null && mc.player != null) {
+         Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
+         if (scaffold != null && scaffold.ownsRotation()) {
+            // One rotation must drive physics, input and serialization for a tick.
+            // Scaffold has priority while lining up a placement.
+            isRotating = false;
+            this.stopServerBlock();
+            this.hasSaved = false;
+            this.hasSentRot = false;
+            this.sentTargetId = -1;
+            this.targetRots = null;
+            this.currentTarget = null;
+            return;
+         }
          if (event.getStage() == Stage.MOTION_PRE) {
             this.updateTargeting();
             if (this.targetRots != null) {
@@ -237,14 +255,17 @@ public class KillauraRecode extends Module {
                this.savedYaw = visualYaw;
                this.savedPitch = visualPitch;
                this.hasSaved = true;
-               if (this.isGrimMovementCorrectionConfigured()) {
-                  // Grim MoveFix owns input correction, so its server yaw must
-                  // be active while vanilla computes this tick's movement.
-                  OyVey.rotationManager.setPlayerRotations(this.targetRots[0], this.targetRots[1]);
-               }
             } else {
                isRotating = false;
                this.hasSaved = false;
+            }
+
+            // Attacks can slow velocity and stop sprinting. Apply those effects
+            // before vanilla moves, matching the attack packet's place before
+            // this tick's movement packet in the server's simulation.
+            this.updateCombat();
+            if (this.targetRots != null && this.isGrimMovementCorrectionConfigured()) {
+               OyVey.rotationManager.setPlayerRotations(this.targetRots[0], this.targetRots[1]);
             }
          } else if (event.getStage() == Stage.POST) {
             isRotating = false;
@@ -264,64 +285,64 @@ public class KillauraRecode extends Module {
 
             this.hasSaved = false;
          } else if (event.getStage() == Stage.PRE) {
-            // Grim's Post check expects interactions before this tick's movement packet.
-            // Any shield slot from the previous attack is also restored here so the
-            // carried-item packet cannot leak into the post-movement portion of a tick.
-            this.restoreShieldBreakSwap();
-
-            KillauraRecode.BlockMode bm = this.grim.getValue()
-               || this.fakeAutoBlock.getValue() && !isFullBlockMode(this.blockMode.getValue())
-               ? KillauraRecode.BlockMode.OFF : this.blockMode.getValue();
-            if (!isFullBlockMode(bm)) {
-               this.stopServerBlock();
-            }
+            // Rotation serialization must not change movement or sprint state
+            // after vanilla has already calculated this tick's displacement.
             if (this.targetRots != null && this.currentTarget != null) {
-               if (isFullBlockMode(bm)) {
-                  this.updateServerBlock(false);
-               }
-               boolean ownedSwordBlock = this.serverBlockHeld
-                  && mc.player.getUsedItemHand() == InteractionHand.MAIN_HAND
-                  && mc.player.getMainHandItem().is(ItemTags.SWORDS);
-               boolean attackReady = (!mc.player.isUsingItem() || ownedSwordBlock) && this.shouldAttack();
-               if (attackReady) {
-                  // PRE runs after local movement physics. Mutating sprint here makes
-                  // the server simulate non-sprint speed for already-sprinted motion.
-                  // Sprint resets belong in KeyboardInput.tick on the following tick.
-                  if (!this.grim.getValue() && !isFullBlockMode(bm)) {
-                     this.tryShieldBreakSwap();
-                  }
-                  if (bm == BlockMode.FULL2) {
-                     this.updateServerBlock(true);
-                  }
-                  this.performAttack(this.currentTarget);
-                  if (bm == BlockMode.FULL2) {
-                     // Keep use/attack/use together in PRE, with no release packet.
-                     this.updateServerBlock(true);
-                  }
-                  SprintModule.lastAttackMs = System.currentTimeMillis();
-                  this.lastAttackTime = System.currentTimeMillis();
-                  this.nextAttackDelay = this.rollDelay();
-                  if (this.hitSelect.getValue()) {
-                     this.hsHoldUntil = System.currentTimeMillis() + this.rollHsDelay();
-                  }
-
-                  if (!this.grim.getValue() && this.multi.getValue()) {
-                     this.switchIndex++;
-                  }
-               } else {
-                  this.updateAutoBlock(bm);
-               }
-
-               // This rotation is serialized by sendPosition() after PRE. Attacks use
-               // the rotation serialized on the preceding tick, never an unsent angle.
                OyVey.rotationManager.setPlayerRotations(this.targetRots[0], this.targetRots[1]);
-            } else {
-               this.stopServerBlock();
-               if (this.autoBlockActive && mc.player.isUsingItem()) {
-                  mc.gameMode.releaseUsingItem(mc.player);
-                  this.autoBlockActive = false;
-               }
             }
+         }
+      }
+   }
+
+   private void updateCombat() {
+      // Restore carried items and update use-item state before physics too.
+      this.restoreShieldBreakSwap();
+
+      KillauraRecode.BlockMode bm = this.grim.getValue()
+         || this.fakeAutoBlock.getValue() && !isFullBlockMode(this.blockMode.getValue())
+         ? KillauraRecode.BlockMode.OFF : this.blockMode.getValue();
+      if (!isFullBlockMode(bm)) {
+         this.stopServerBlock();
+      }
+      if (this.targetRots != null && this.currentTarget != null) {
+         if (isFullBlockMode(bm)) {
+            this.updateServerBlock(false);
+         }
+         boolean ownedSwordBlock = this.serverBlockHeld
+            && mc.player.getUsedItemHand() == InteractionHand.MAIN_HAND
+            && mc.player.getMainHandItem().is(ItemTags.SWORDS);
+         boolean attackReady = (!mc.player.isUsingItem() || ownedSwordBlock) && this.shouldAttack();
+         if (attackReady) {
+            if (!this.grim.getValue() && !isFullBlockMode(bm)) {
+               this.tryShieldBreakSwap();
+            }
+            if (bm == BlockMode.FULL2) {
+               this.updateServerBlock(true);
+            }
+            // canAttackNow validates the preceding tick's transmitted rotation.
+            this.performAttack(this.currentTarget);
+            if (bm == BlockMode.FULL2) {
+               // Keep use/attack/use together before physics.
+               this.updateServerBlock(true);
+            }
+            SprintModule.lastAttackMs = System.currentTimeMillis();
+            this.lastAttackTime = System.currentTimeMillis();
+            this.nextAttackDelay = this.rollDelay();
+            if (this.hitSelect.getValue()) {
+               this.hsHoldUntil = System.currentTimeMillis() + this.rollHsDelay();
+            }
+
+            if (!this.grim.getValue() && this.multi.getValue()) {
+               this.switchIndex++;
+            }
+         } else {
+            this.updateAutoBlock(bm);
+         }
+      } else {
+         this.stopServerBlock();
+         if (this.autoBlockActive && mc.player.isUsingItem()) {
+            mc.gameMode.releaseUsingItem(mc.player);
+            this.autoBlockActive = false;
          }
       }
    }
@@ -724,7 +745,7 @@ public class KillauraRecode extends Module {
    }
 
    private float[] quantizeRotation(float targetYaw, float targetPitch) {
-      GrimRotationMovementReconciler.Rotation rotation = GrimRotationMovementReconciler.quantizeRotation(
+      SilentRotationMath.Rotation rotation = SilentRotationMath.quantizeRotation(
          this.sentYaw,
          this.sentPitch,
          targetYaw,
@@ -975,7 +996,7 @@ public class KillauraRecode extends Module {
       }
 
       Input originalKeys = input.keyPresses;
-      GrimRotationMovementReconciler.Movement corrected = GrimRotationMovementReconciler.correctMovement(
+      SilentRotationMath.Movement corrected = SilentRotationMath.correctMovement(
          originalKeys,
          this.savedYaw,
          this.targetRots[0]

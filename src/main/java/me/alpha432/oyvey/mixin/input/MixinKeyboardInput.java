@@ -26,9 +26,9 @@ public class MixinKeyboardInput {
          aura.applyGrimMovementCorrection((ClientInput)(Object)this);
       }
 
-      SprintModule sprint = OyVey.moduleManager.getModuleByClass(SprintModule.class);
-      if (sprint != null) {
-         sprint.applySprintInput((ClientInput)(Object)this);
+      Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
+      if (scaffold != null) {
+         scaffold.applyInput((ClientInput)(Object)this);
       }
 
       WTap wTap = OyVey.moduleManager.getModuleByClass(WTap.class);
@@ -36,13 +36,14 @@ public class MixinKeyboardInput {
          wTap.applyInputReset((ClientInput)(Object)this);
       }
 
+      SprintModule sprint = OyVey.moduleManager.getModuleByClass(SprintModule.class);
+      if (sprint != null) {
+         sprint.applySprintInput((ClientInput)(Object)this);
+      }
+
       Speed speed = OyVey.moduleManager.getModuleByClass(Speed.class);
       if (speed != null) {
          speed.applyVulcan2Input((ClientInput)(Object)this);
-      }
-      Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
-      if (scaffold != null) {
-         scaffold.applyInput((ClientInput)(Object)this);
       }
    }
 }

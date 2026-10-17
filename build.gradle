@@ -52,6 +52,28 @@ java {
     withSourcesJar()
 }
 
+// Run the placement/rotation regression checks against the actual Minecraft
+// geometry classes, without introducing a separate test framework dependency.
+sourceSets {
+    scaffoldRegression {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
+}
+def scaffoldRegressionTest = tasks.register('scaffoldRegressionTest', JavaExec) {
+    dependsOn tasks.named('scaffoldRegressionClasses')
+    classpath = sourceSets.scaffoldRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.scaffold.ScaffoldRegressionChecks'
+    workingDir = layout.buildDirectory.dir('scaffold-regression').get().asFile
+    doFirst { workingDir.mkdirs() }
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+tasks.named('check') {
+    dependsOn scaffoldRegressionTest
+}
+
 jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 

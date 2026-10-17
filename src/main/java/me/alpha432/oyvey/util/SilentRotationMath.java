@@ -1,4 +1,4 @@
-package me.alpha432.oyvey.features.modules.combat;
+package me.alpha432.oyvey.util;
 
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Input;
@@ -13,11 +13,11 @@ import net.minecraft.world.entity.player.Input;
  * twice: vanilla applies those terms later in the movement tick and Grim does
  * the same independently in its prediction engine.</p>
  */
-final class GrimRotationMovementReconciler {
+public final class SilentRotationMath {
    private static final float INPUT_EPSILON = 1.0E-6F;
    private static final float SCORE_EPSILON = 1.0E-6F;
 
-   private GrimRotationMovementReconciler() {
+   private SilentRotationMath() {
    }
 
    /**
@@ -27,7 +27,7 @@ final class GrimRotationMovementReconciler {
     * <p>Yaw is kept continuous around {@code baseYaw}; it is not reduced modulo
     * 360. That avoids the artificial +/-360 jump detected by AimModulo360.</p>
     */
-   static Rotation quantizeRotation(float baseYaw, float basePitch, float targetYaw, float targetPitch, double sensitivity) {
+   public static Rotation quantizeRotation(float baseYaw, float basePitch, float targetYaw, float targetPitch, double sensitivity) {
       float step = mouseStep(sensitivity);
       if (!Float.isFinite(step) || step <= INPUT_EPSILON) {
          return new Rotation(baseYaw + Mth.wrapDegrees(targetYaw - baseYaw), Mth.clamp(targetPitch, -90.0F, 90.0F));
@@ -58,7 +58,7 @@ final class GrimRotationMovementReconciler {
     * local acceleration exactly reconstructible from the packet. Diagonal
     * inputs are normalized exactly as {@code KeyboardInput.tick()} does.</p>
     */
-   static Movement correctMovement(Input keys, float cameraYaw, float serverYaw) {
+   public static Movement correctMovement(Input keys, float cameraYaw, float serverYaw) {
       int originalForward = bool(keys.forward()) - bool(keys.backward());
       int originalSideways = bool(keys.left()) - bool(keys.right());
       if (originalForward == 0 && originalSideways == 0) {
@@ -120,10 +120,10 @@ final class GrimRotationMovementReconciler {
       return value ? 1 : 0;
    }
 
-   record Rotation(float yaw, float pitch) {
+   public record Rotation(float yaw, float pitch) {
    }
 
-   record Movement(int sideways, int forward, float normalizedSideways, float normalizedForward) {
+   public record Movement(int sideways, int forward, float normalizedSideways, float normalizedForward) {
       private static final Movement ZERO = new Movement(0, 0, 0.0F, 0.0F);
    }
 

@@ -3,6 +3,8 @@ package me.alpha432.oyvey.mixin.render;
 import com.mojang.blaze3d.vertex.PoseStack;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.modules.render.Chams;
+import me.alpha432.oyvey.features.modules.movement.Scaffold;
+import me.alpha432.oyvey.features.modules.movement.scaffold.SilentHeadPose;
 import me.alpha432.oyvey.manager.RotationManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
@@ -42,19 +44,23 @@ public class MixinEntityRenderDispatcher {
          Minecraft mc = Minecraft.getInstance();
          if (mc.player != null && entity == mc.player && entity instanceof AbstractClientPlayer player) {
             RotationManager rm = OyVey.rotationManager;
-            if (rm.isRenderOverrideActive()) {
-               float renderYaw = rm.getRenderYaw();
-               float prevYaw = rm.getPrevRenderYaw();
-               float renderPitch = rm.getRenderPitch();
-               float prevPitch = rm.getPrevRenderPitch();
+            Scaffold scaffold = OyVey.moduleManager == null ? null : OyVey.moduleManager.getModuleByClass(Scaffold.class);
+            SilentHeadPose head = scaffold != null && scaffold.hasSilentHeadPose() ? scaffold.getSilentHeadPose() : null;
+            if (head != null || rm.isRenderOverrideActive()) {
+               float renderYaw = head == null ? rm.getRenderYaw() : head.yaw();
+               float prevYaw = head == null ? rm.getPrevRenderYaw() : head.previousYaw();
+               float renderPitch = head == null ? rm.getRenderPitch() : head.pitch();
+               float prevPitch = head == null ? rm.getPrevRenderPitch() : head.previousPitch();
                this.oyvey$savedBodyRot = player.yBodyRot;
                this.oyvey$savedBodyRotO = player.yBodyRotO;
                this.oyvey$savedHeadRot = player.yHeadRot;
                this.oyvey$savedHeadRotO = player.yHeadRotO;
                this.oyvey$savedXRot = player.getXRot();
                this.oyvey$savedXRotO = player.xRotO;
-               player.yBodyRot = renderYaw;
-               player.yBodyRotO = prevYaw;
+               // Scaffold turns the model's head while its body/camera retain
+               // the user's heading. These fields are restored after extraction.
+               player.yBodyRot = head == null ? renderYaw : Scaffold.visualYaw;
+               player.yBodyRotO = head == null ? prevYaw : Scaffold.visualYaw;
                player.yHeadRot = renderYaw;
                player.yHeadRotO = prevYaw;
                player.setXRot(renderPitch);

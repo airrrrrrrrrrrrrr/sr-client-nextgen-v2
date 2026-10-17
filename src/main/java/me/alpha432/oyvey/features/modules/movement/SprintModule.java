@@ -1,9 +1,6 @@
 package me.alpha432.oyvey.features.modules.movement;
 
 import me.alpha432.oyvey.OyVey;
-import me.alpha432.oyvey.event.Stage;
-import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
-import me.alpha432.oyvey.event.system.Subscribe;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
 import me.alpha432.oyvey.features.modules.combat.WTap;
@@ -27,17 +24,6 @@ public class SprintModule extends Module {
    @Override
    public void onDisable() {
       this.releaseSprint();
-   }
-
-   @Subscribe
-   public void onMotion(UpdateWalkingPlayerEvent event) {
-      if (event.getStage() == Stage.PRE && mc.player != null) {
-         if (this.attackPaused()) {
-            mc.player.setSprinting(false);
-         } else if (!this.shouldSprint()) {
-            this.releaseSprint();
-         }
-      }
    }
 
    private boolean attackPaused() {
