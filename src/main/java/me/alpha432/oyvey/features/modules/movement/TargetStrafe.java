@@ -5,35 +5,56 @@ import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.combat.GrimAura;
 import me.alpha432.oyvey.features.modules.combat.KillAura;
 import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
+import me.alpha432.oyvey.features.modules.combat.KillauraNew;
 import me.alpha432.oyvey.features.settings.Setting;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
 
 public class TargetStrafe extends Module {
    public final Setting<Double> range = this.register(new Setting<>("Range", 3.0, 0.1, 6.0));
    public final Setting<Boolean> behind = this.register(new Setting<>("Behind", false));
-   public final Setting<Boolean> onGround = this.register(new Setting<>("OnGround", false));
+   public final Setting<Boolean> fightOnly = this.register(new Setting<>("FightOnly", true));
+   public final Setting<Boolean> speedOnly = this.register(new Setting<>("SpeedOnly", false));
    private int direction = 1;
    private int dirTickTimer = 0;
+   private int directionTick = Integer.MIN_VALUE;
 
    public TargetStrafe() {
-      super("TargetStrafe", "Circles around your KillAura target.", Module.Category.MOVEMENT);
+      super("TargetStrafe", "Circles around a combat target or nearby player.", Module.Category.MOVEMENT);
    }
 
    @Override
    public void onDisable() {
       this.direction = 1;
       this.dirTickTimer = 0;
+      this.directionTick = Integer.MIN_VALUE;
    }
 
    @Override
    public void onTick() {
+      this.applyMotion();
+   }
+
+   public void applyMotion() {
+      if (!this.isEnabled()) return;
       if (!nullCheck()) {
+         Speed speedModule = OyVey.moduleManager.getModuleByClass(Speed.class);
+         if (this.speedOnly.getValue() && (speedModule == null || !speedModule.isEnabled())) {
+            this.dirTickTimer = 0;
+            return;
+         }
          Entity target = this.getAuraTarget();
-         if (target != null && (!this.onGround.getValue() || mc.player.onGround())) {
-            this.dirTickTimer++;
-            if (mc.player.horizontalCollision && this.dirTickTimer >= 8) {
-               this.direction = -this.direction;
-               this.dirTickTimer = 0;
+         if (target == null && !this.fightOnly.getValue()) {
+            target = this.getNearbyTarget();
+         }
+         if (this.validTarget(target)) {
+            if (this.directionTick != mc.player.tickCount) {
+               this.directionTick = mc.player.tickCount;
+               this.dirTickTimer++;
+               if (mc.player.horizontalCollision && this.dirTickTimer >= 8) {
+                  this.direction = -this.direction;
+                  this.dirTickTimer = 0;
+               }
             }
 
             double speed = mc.player.getDeltaMovement().horizontalDistance();
@@ -46,17 +67,41 @@ public class TargetStrafe extends Module {
 
    private Entity getAuraTarget() {
       KillAura ka = OyVey.moduleManager.getModuleByClass(KillAura.class);
-      if (ka != null && ka.isEnabled() && ka.getTarget() != null) {
+      if (ka != null && ka.isEnabled() && this.validTarget(ka.getTarget())) {
          return ka.getTarget();
       }
 
       GrimAura ga = OyVey.moduleManager.getModuleByClass(GrimAura.class);
-      if (ga != null && ga.isEnabled() && ga.getTarget() != null) {
+      if (ga != null && ga.isEnabled() && this.validTarget(ga.getTarget())) {
          return ga.getTarget();
       }
 
       KillauraRecode kr = OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
-      return kr != null && kr.isEnabled() && kr.getTarget() != null ? kr.getTarget() : null;
+      if (kr != null && kr.isEnabled() && this.validTarget(kr.getTarget())) {
+         return kr.getTarget();
+      }
+      KillauraNew kn = OyVey.moduleManager.getModuleByClass(KillauraNew.class);
+      return kn != null && kn.isEnabled() && this.validTarget(kn.getTarget()) ? kn.getTarget() : null;
+   }
+
+   private boolean validTarget(Entity target) {
+      return target != null && target != mc.player && target.isAlive() && !target.isRemoved()
+         && mc.level.getEntity(target.getId()) == target
+         && (!(target instanceof Player player) || !player.isSpectator() && !OyVey.friendManager.isFriend(player));
+   }
+
+   private Entity getNearbyTarget() {
+      Player nearest = null;
+      double bestDistance = 6.0 * 6.0;
+      for (Player player : mc.level.players()) {
+         if (!this.validTarget(player) || !mc.player.hasLineOfSight(player)) continue;
+         double distance = mc.player.distanceToSqr(player);
+         if (distance < bestDistance) {
+            nearest = player;
+            bestDistance = distance;
+         }
+      }
+      return nearest;
    }
 
    private void doStrafe(Entity target, double speed) {

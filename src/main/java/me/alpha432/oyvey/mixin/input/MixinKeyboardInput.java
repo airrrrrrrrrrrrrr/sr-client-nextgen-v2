@@ -6,6 +6,7 @@ import me.alpha432.oyvey.features.modules.combat.WTap;
 import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.features.modules.movement.SprintModule;
 import me.alpha432.oyvey.features.modules.movement.Speed;
+import me.alpha432.oyvey.features.modules.movement.InventoryMove;
 import net.minecraft.client.player.ClientInput;
 import net.minecraft.client.player.KeyboardInput;
 import org.spongepowered.asm.mixin.Mixin;
@@ -15,6 +16,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(KeyboardInput.class)
 public class MixinKeyboardInput {
+   @Inject(method = "tick", at = @At("HEAD"))
+   private void oyvey$inventoryMoveInput(CallbackInfo ci) {
+      if (OyVey.moduleManager == null) return;
+      InventoryMove inventoryMove = OyVey.moduleManager.getModuleByClass(InventoryMove.class);
+      if (inventoryMove != null) inventoryMove.updateInputKeys();
+   }
+
    @Inject(method = "tick", at = @At("RETURN"))
    private void oyvey$correctSilentRotationMovement(CallbackInfo ci) {
       if (OyVey.moduleManager == null) {

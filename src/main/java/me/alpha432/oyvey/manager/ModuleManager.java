@@ -66,9 +66,7 @@ import me.alpha432.oyvey.features.modules.movement.StepModule;
 import me.alpha432.oyvey.features.modules.movement.TargetStrafe;
 import me.alpha432.oyvey.features.modules.movement.TimerModule;
 import me.alpha432.oyvey.features.modules.movement.WindChargeBoost;
-import me.alpha432.oyvey.features.modules.player.AimAssistModule;
 import me.alpha432.oyvey.features.modules.player.AntiVoid;
-import me.alpha432.oyvey.features.modules.player.AutoClickerModule;
 import me.alpha432.oyvey.features.modules.player.AutoEat;
 import me.alpha432.oyvey.features.modules.player.AutoExtinguish;
 import me.alpha432.oyvey.features.modules.player.AutoPot;
@@ -173,8 +171,6 @@ public class ModuleManager implements Jsonable, Util {
       this.register(new SkyWarsAutoPlay());
       this.register(new FastUse());
       this.register(new FakeLagModule());
-      this.register(new AutoClickerModule());
-      this.register(new AimAssistModule());
       this.register(new MusicPlayerModule());
       this.register(new TargetESP());
       this.register(new TwoDESP());

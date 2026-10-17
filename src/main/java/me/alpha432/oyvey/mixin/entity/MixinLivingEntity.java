@@ -3,6 +3,7 @@ package me.alpha432.oyvey.mixin.entity;
 import me.alpha432.oyvey.features.modules.render.AnimationsModule;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.modules.movement.Speed;
+import me.alpha432.oyvey.features.modules.movement.TargetStrafe;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
@@ -23,6 +24,10 @@ public class MixinLivingEntity {
          Speed speed = OyVey.moduleManager.getModuleByClass(Speed.class);
          if (speed != null) {
             speed.applyVulcan2Motion();
+         }
+         TargetStrafe strafe = OyVey.moduleManager.getModuleByClass(TargetStrafe.class);
+         if (strafe != null) {
+            strafe.applyMotion();
          }
       }
    }

@@ -1,51 +1,102 @@
 package me.alpha432.oyvey.features.modules.movement;
 
-import me.alpha432.oyvey.event.Stage;
-import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
-import me.alpha432.oyvey.event.system.Subscribe;
+import com.mojang.blaze3d.platform.InputConstants;
+import java.util.HashSet;
+import java.util.Set;
+import me.alpha432.oyvey.features.gui.AccountManagerScreen;
+import me.alpha432.oyvey.features.gui.DropdownGui;
+import me.alpha432.oyvey.features.gui.FancyGui;
 import me.alpha432.oyvey.features.modules.Module;
-import me.alpha432.oyvey.features.settings.Setting;
-import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.network.protocol.game.ServerboundContainerClosePacket;
+import me.alpha432.oyvey.mixin.input.KeyMappingAccessor;
+import me.alpha432.oyvey.util.player.GuiMovementKeys;
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.Options;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.MultiLineEditBox;
+import net.minecraft.client.gui.components.events.ContainerEventHandler;
+import net.minecraft.client.gui.components.events.GuiEventListener;
+import net.minecraft.client.gui.screens.ChatScreen;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.AbstractSignEditScreen;
+import net.minecraft.client.gui.screens.inventory.BookEditScreen;
+import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
+import org.lwjgl.glfw.GLFW;
 
 public class InventoryMove extends Module {
-   public final Setting<InventoryMove.Mode> mode = this.register(new Setting<>("Mode", InventoryMove.Mode.VULCAN));
-   public final Setting<Boolean> jump = this.bool("Jump", true);
-   private boolean movingThisTick = false;
+   private final Set<Integer> heldScanCodes = new HashSet<>();
+   private GuiMovementKeys movementKeys;
+   private Options boundOptions;
 
    public InventoryMove() {
-      super("InventoryMove", "Move while inventory is open.", Module.Category.MOVEMENT);
+      super("InventoryMove", "Move normally in inventories, containers and other GUIs.", Module.Category.MOVEMENT);
    }
 
-   @Subscribe
-   private void onMotion(UpdateWalkingPlayerEvent event) {
-      if (mc.player != null && mc.screen instanceof AbstractContainerScreen) {
-         if (event.getStage() == Stage.MOTION_PRE) {
-            float fwd = (mc.options.keyUp.isDown() ? 1.0F : 0.0F) - (mc.options.keyDown.isDown() ? 1.0F : 0.0F);
-            float strafe = (mc.options.keyLeft.isDown() ? 1.0F : 0.0F) - (mc.options.keyRight.isDown() ? 1.0F : 0.0F);
-            this.movingThisTick = fwd != 0.0F || strafe != 0.0F;
-            mc.player.zza = fwd;
-            mc.player.xxa = strafe;
-            if (this.jump.getValue() && mc.options.keyJump.isDown() && mc.player.onGround()) {
-               mc.player.jumpFromGround();
-            }
-
-            mc.player.setSprinting(false);
-         } else if (event.getStage() == Stage.PRE && this.mode.getValue() == InventoryMove.Mode.VULCAN) {
-            if (!this.movingThisTick) {
-               return;
-            }
-
-            int cid = mc.player.containerMenu.containerId;
-            if (cid != 0) {
-               mc.player.connection.send(new ServerboundContainerClosePacket(cid));
-            }
-         }
+   /** Runs before vanilla builds movement input, preserving normal physics and diagonal normalization. */
+   public void updateInputKeys() {
+      if (!this.isEnabled() || mc.options == null) return;
+      if (this.boundOptions != mc.options) {
+         this.boundOptions = mc.options;
+         this.movementKeys = new GuiMovementKeys(mc.options.keyUp, mc.options.keyDown,
+            mc.options.keyLeft, mc.options.keyRight, mc.options.keyJump, mc.options.keyShift, mc.options.keySprint);
       }
+      if (nullCheck()) {
+         this.movementKeys.release(false, this::physicalKeyDown, InventoryMove::setKeyDown);
+         this.heldScanCodes.clear();
+         return;
+      }
+      boolean active = mc.isWindowActive() && mc.player.isAlive();
+      if (!active) this.heldScanCodes.clear();
+      this.movementKeys.update(mc.screen != null, active && canMoveInScreen(mc.screen),
+         this::physicalKeyDown, InventoryMove::setKeyDown);
    }
 
-   public enum Mode {
-      BASIC,
-      VULCAN;
+   public void recordKeyEvent(int action, int scanCode) {
+      if (!this.isEnabled() || scanCode < 0) return;
+      if (action == GLFW.GLFW_RELEASE) this.heldScanCodes.remove(scanCode);
+      else this.heldScanCodes.add(scanCode);
+   }
+
+   private boolean physicalKeyDown(InputConstants.Key key) {
+      long window = mc.getWindow().handle();
+      return switch (key.getType()) {
+         case KEYSYM -> key.getValue() >= 0 && key.getValue() <= GLFW.GLFW_KEY_LAST
+            && GLFW.glfwGetKey(window, key.getValue()) == GLFW.GLFW_PRESS;
+         case MOUSE -> key.getValue() >= 0 && key.getValue() <= GLFW.GLFW_MOUSE_BUTTON_LAST
+            && GLFW.glfwGetMouseButton(window, key.getValue()) == GLFW.GLFW_PRESS;
+         case SCANCODE -> this.heldScanCodes.contains(key.getValue());
+      };
+   }
+
+   private static void setKeyDown(KeyMapping key, boolean down) {
+      // Bypass toggle semantics: repeated GUI polls must not flip sprint/sneak on and off.
+      ((KeyMappingAccessor)(Object)key).oyvey$setDown(down);
+   }
+
+   public static boolean canMoveInScreen(Screen screen) {
+      if (screen == null) return true;
+      if (screen instanceof ChatScreen || screen instanceof AbstractSignEditScreen || screen instanceof BookEditScreen
+         || screen instanceof KeyBindsScreen || screen instanceof AccountManagerScreen) return false;
+      if (screen instanceof DropdownGui gui && gui.isCapturingKeyboardInput()) return false;
+      if (screen instanceof FancyGui gui && gui.isCapturingKeyboardInput()) return false;
+      GuiEventListener focused = screen.getFocused();
+      for (int depth = 0; focused != null && depth < 16; depth++) {
+         if (focused instanceof EditBox || focused instanceof MultiLineEditBox) return false;
+         if (!(focused instanceof ContainerEventHandler container)) break;
+         focused = container.getFocused();
+      }
+      return true;
+   }
+
+   @Override
+   public void onDisable() {
+      if (this.movementKeys != null) {
+         this.movementKeys.release(mc.screen == null && mc.isWindowActive(), this::physicalKeyDown, InventoryMove::setKeyDown);
+      }
+      this.heldScanCodes.clear();
+   }
+
+   @Override
+   public void onUnload() {
+      this.onDisable();
    }
 }

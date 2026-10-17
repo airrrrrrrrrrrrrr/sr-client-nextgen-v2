@@ -106,6 +106,10 @@ public class FancyGui extends Screen {
       }
    }
 
+   public boolean isCapturingKeyboardInput() {
+      return this.configTyping || this.musicAddTyping || this.capturingBind != null || this.settingsModule == null;
+   }
+
    public void extractBackground(GuiGraphicsExtractor g, int mx, int my, float delta) {
    }
 

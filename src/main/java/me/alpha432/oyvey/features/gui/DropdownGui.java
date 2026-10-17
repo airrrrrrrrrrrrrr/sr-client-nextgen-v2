@@ -24,7 +24,6 @@ import me.alpha432.oyvey.features.script.LuaScriptSetting;
 import me.alpha432.oyvey.features.settings.Bind;
 import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.util.render.RenderUtil;
-import me.alpha432.oyvey.util.render.HudFont;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -34,7 +33,11 @@ import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.FontDescription;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
+import org.joml.Vector2f;
 
 public class DropdownGui extends Screen {
    private static DropdownGui INSTANCE;
@@ -44,6 +47,7 @@ public class DropdownGui extends Screen {
    private int layoutHeight;
    private float layoutScale;
    private int panelLimit;
+   private final Map<Module.Category, Integer> panelLimits = new LinkedHashMap<>();
    private static final Set<Module> expanded = new HashSet<>();
    private static final Set<LuaScript> expandedScripts = new HashSet<>();
    private static LuaScriptSetting scriptSlider = null;
@@ -75,16 +79,18 @@ public class DropdownGui extends Screen {
    private static boolean cpDragSV;
    private static boolean cpDragH;
    private static boolean cpDragA;
-   private static final int PW = 132;
-   private static final int HDR = 18;
-   private static final int MH = 18;
+   private static final int PW = DropdownStyle.PANEL_WIDTH;
+   private static final FontDescription GUI_FONT = new FontDescription.Resource(Identifier.fromNamespaceAndPath("oyvey", "clickgui"));
+   private static final FontDescription GUI_HEADER_FONT = new FontDescription.Resource(Identifier.fromNamespaceAndPath("oyvey", "clickgui_header"));
+   private static final int HDR = 24;
+   private static final int MH = 22;
    private static final int SH = 16;
    private static final int CB = 7;
    private static final int CP_SQ = 88;
    private static final int CP_BAR = 7;
-   private static final int C_HEADER = 0xF50D0E13;
-   private static final int C_BODY = 0xF2151924;
-   private static final int C_BORDER = 0xFF2A303D;
+   private static final int C_HEADER = 0xFF1B1C20;
+   private static final int C_BODY = 0xF514141C;
+   private static final int C_BORDER = 0xFF14141C;
    private static final int C_SEP = -14803408;
    private static final int C_TEXT = -2236929;
    private static final int C_SUBTEXT = -8947798;
@@ -111,12 +117,16 @@ public class DropdownGui extends Screen {
       INSTANCE = this;
    }
 
+   public boolean isCapturingKeyboardInput() {
+      return this.configTyping || this.captureBind != null || this.captureBindModule != null;
+   }
+
    protected void init() {
+      this.refreshConfigList();
       if (panelPos.isEmpty() || this.layoutWidth != this.width || this.layoutHeight != this.height) {
          this.initPositions();
       }
 
-      this.refreshConfigList();
       this.openTime = System.currentTimeMillis();
    }
 
@@ -133,92 +143,67 @@ public class DropdownGui extends Screen {
       return t;
    }
 
-   private static float easeOutBack(float t) {
-      float c1 = 1.70158F;
-      float c3 = c1 + 1.0F;
-      float p = t - 1.0F;
-      return 1.0F + c3 * p * p * p + c1 * p * p;
-   }
-
    private void initPositions() {
       panelPos.clear();
       panelScroll.clear();
+      this.panelLimits.clear();
       this.toolPositions.clear();
       this.layoutWidth = this.width;
       this.layoutHeight = this.height;
       float scale = this.guiScale();
       this.layoutScale = scale;
-      int usableWidth = (int)((this.width - 24) / scale);
-      int usableHeight = (int)((this.height - 52) / scale);
-      int count = 8;
-      int columns = Math.max(1, Math.min(count, (usableWidth + 10) / (PW + 10)));
-      int rows = (count + columns - 1) / columns;
-      this.panelLimit = Math.max(HDR + MH, (usableHeight - (rows - 1) * 12) / rows);
-      int originX = (int)(this.width / 2.0F - (columns * (PW + 10) - 10) / 2.0F);
+      int columns = DropdownStyle.COLUMNS;
+      int totalWidth = DropdownStyle.totalWidth();
+      int usableHeight = DropdownStyle.availableHeight(this.height, scale);
+      this.panelLimit = usableHeight;
+      int originX = (int)(this.width / 2.0F - totalWidth / 2.0F);
       int originY = (int)(this.height / 2.0F - usableHeight / 2.0F);
-      Module.Category[] order = {Module.Category.COMBAT, Module.Category.MOVEMENT, Module.Category.RENDER,
-         Module.Category.PLAYER, Module.Category.MISC, Module.Category.GHOST, Module.Category.CLIENT, Module.Category.OLD};
-      for (int i = 0; i < order.length; i++) {
-         panelPos.put(order[i], new int[]{originX + (i % columns) * (PW + 10), originY + (i / columns) * (this.panelLimit + 12)});
-      }
-      List<int[]> occupied = new ArrayList<>();
-      for (Module.Category category : order) {
-         int[] position = panelPos.get(category);
-         occupied.add(new int[]{position[0], position[1], this.panelH(category)});
-      }
-      for (ToolPanel tool : ToolPanel.values()) {
-         if (tool == ToolPanel.SCRIPTS && OyVey.scriptManager == null) continue;
-         this.placeToolPanel(tool, occupied, originX, originY, columns, usableHeight);
+      Module.Category[] primary = {Module.Category.COMBAT, Module.Category.MOVEMENT, Module.Category.RENDER,
+         Module.Category.PLAYER, Module.Category.MISC};
+      Module.Category[] secondary = {Module.Category.GHOST, Module.Category.OLD, Module.Category.CLIENT};
+      for (int column = 0; column < columns; column++) {
+         int x = originX + column * (PW + DropdownStyle.GAP);
+         int lowerContent = column < secondary.length ? this.contentH(secondary[column])
+            : column == 3 ? HDR + this.configsContentH() + 22
+            : OyVey.scriptManager == null ? 0 : HDR + this.scriptsContentH() + 18;
+         int reserve = lowerContent == 0 ? 0 : Math.min(lowerContent, usableHeight / 3) + 12;
+         int upperHeight = Math.min(this.contentH(primary[column]), usableHeight - reserve);
+         this.panelLimits.put(primary[column], upperHeight);
+         panelPos.put(primary[column], new int[]{x, originY});
+         int lowerY = originY + upperHeight + 12;
+         int lowerLimit = usableHeight - upperHeight - 12;
+         if (column < secondary.length) {
+            this.panelLimits.put(secondary[column], lowerLimit);
+            panelPos.put(secondary[column], new int[]{x, lowerY});
+         } else if (column == 3) {
+            this.toolPositions.put(ToolPanel.CONFIGS, new int[]{x, lowerY, lowerLimit});
+         } else if (OyVey.scriptManager != null) {
+            this.toolPositions.put(ToolPanel.SCRIPTS, new int[]{x, lowerY, lowerLimit});
+         }
       }
    }
 
-   private void placeToolPanel(ToolPanel tool, List<int[]> occupied, int originX, int originY,
-                               int columns, int usableHeight) {
-      int minimum = HDR + (tool == ToolPanel.CONFIGS ? 22 : 18) + 12;
-      int[] best = null;
-      List<Integer> candidates = new ArrayList<>();
-      candidates.add(originY);
-      for (int[] rectangle : occupied) candidates.add(rectangle[1] + rectangle[2] + 12);
-      for (int column = 0; column < columns; column++) {
-         int x = originX + column * (PW + 10);
-         for (int y : candidates) {
-            int bottom = originY + usableHeight;
-            boolean blocked = false;
-            for (int[] rectangle : occupied) {
-               if (x >= rectangle[0] + PW || x + PW <= rectangle[0]) continue;
-               if (y < rectangle[1] + rectangle[2] + 12 && y + minimum > rectangle[1] - 12) {
-                  blocked = true;
-                  break;
-               }
-               if (rectangle[1] >= y) bottom = Math.min(bottom, rectangle[1] - 12);
-            }
-            int height = Math.min(this.panelLimit, bottom - y);
-            if (!blocked && height >= minimum && (best == null || height > best[2])) {
-               best = new int[]{x, y, height};
-            }
-         }
-      }
-      if (best == null) {
-         int offset = (tool.ordinal() + 1) * 16;
-         best = new int[]{originX + (columns - 1) * (PW + 10) - offset, originY + offset,
-            Math.max(minimum, this.panelLimit)};
-      }
-      this.toolPositions.put(tool, best);
-      occupied.add(best);
-   }
    private float guiScale() {
       ClickGuiModule module = ClickGuiModule.getInstance();
       float requested = module == null ? 1.0F : module.guiScale.getValue();
-      float fit = Math.min((this.width - 24.0F) / (3 * (PW + 10) - 10), (this.height - 52.0F) / 250.0F);
-      return Math.max(0.25F, Math.min(requested, fit));
+      return DropdownStyle.fitScale(this.width, this.height, requested);
+   }
+
+   private Vector2f screenMouse(double x, double y) {
+      return DropdownStyle.mouse(x, y, this.width / 2.0F, this.height / 2.0F,
+         this.guiScale());
+   }
+
+   private static MutableComponent guiComponent(String text) {
+      return Component.literal(text).withStyle(style -> style.withFont(GUI_FONT));
    }
 
    private static void guiText(GuiGraphicsExtractor ctx, String text, int x, int y, int color, boolean shadow) {
-      ctx.text(Minecraft.getInstance().font, HudFont.ARIAL.text(text), x, y, color, shadow);
+      ctx.text(Minecraft.getInstance().font, guiComponent(text), x, y, color, shadow);
    }
 
    private static int guiWidth(String text) {
-      return Minecraft.getInstance().font.width(HudFont.ARIAL.text(text));
+      return Minecraft.getInstance().font.width(guiComponent(text));
    }
 
    private static List<String> wrapText(String text, int width) {
@@ -289,7 +274,7 @@ public class DropdownGui extends Screen {
 
    private TextRow settingText(Setting<?> setting) {
       int reserved = setting.getValue() instanceof Boolean || setting.isColorSetting() ? 32 : 14;
-      return textRow(setting.getName(), this.settingValue(setting), PW - reserved);
+      return textRow(setting.getName().replaceAll("([a-z0-9])([A-Z])", "$1 $2"), this.settingValue(setting), PW - reserved);
    }
 
    private int settingH(Setting<?> setting) {
@@ -297,7 +282,7 @@ public class DropdownGui extends Screen {
    }
 
    private int moduleH(Module module) {
-      return 6 + 12 * wrapText(moduleLabel(module), PW - 24).size();
+      return 10 + 12 * wrapText(moduleLabel(module), PW - 24).size();
    }
 
    private TextRow bindText(Module module) {
@@ -322,17 +307,15 @@ public class DropdownGui extends Screen {
       }
    }
 
-   private static String categoryIcon(Module.Category cat) {
+   private static int categoryIcon(Module.Category cat) {
       return switch (cat) {
-         case COMBAT -> "\u25CE";
-         case MOVEMENT -> "\u21AF";
-         case RENDER -> "\u25C9";
-         case PLAYER -> "\u25CB";
-         case MISC -> "\u2699";
-         case GHOST -> "\u2726";
-         case CLIENT -> "\u2630";
-         case OLD -> "\u2022";
-         default -> "\u25CB";
+         case COMBAT -> 0;
+         case MOVEMENT -> 1;
+         case RENDER -> 2;
+         case PLAYER -> 3;
+         case MISC -> 4;
+         case GHOST -> 5;
+         default -> 6;
       };
    }
 
@@ -346,8 +329,9 @@ public class DropdownGui extends Screen {
       }
       int cx = this.width / 2;
       int cy = this.height / 2;
-      int smx = (int)((mx - cx) / scale + cx);
-      int smy = (int)((my - cy) / scale + cy);
+      Vector2f mouse = this.screenMouse(mx, my);
+      int smx = (int)mouse.x;
+      int smy = (int)mouse.y;
       if (sliderDrag != null) {
          long win = Minecraft.getInstance().getWindow().handle();
          if (GLFW.glfwGetMouseButton(win, 0) == 1) {
@@ -370,8 +354,8 @@ public class DropdownGui extends Screen {
          long win = Minecraft.getInstance().getWindow().handle();
          if (GLFW.glfwGetMouseButton(win, 0) == 1) {
             int[] p = panelPos.get(this.dragging);
-            p[0] = Math.max(0, smx - this.dragOffX);
-            p[1] = Math.max(0, smy - this.dragOffY);
+            p[0] = smx - this.dragOffX;
+            p[1] = smy - this.dragOffY;
          } else {
             this.dragging = null;
          }
@@ -388,13 +372,9 @@ public class DropdownGui extends Screen {
       }
 
       float openT = this.openAnim();
-      float animScale = easeOutBack(openT);
-      int dimAlpha = (int)(205.0F * openT);
-      ctx.fill(0, 0, this.width, this.height, dimAlpha << 24);
+      DropdownStyle.background(ctx, this.width, this.height, openT);
       ctx.pose().pushMatrix();
-      ctx.pose().translate(cx, cy);
-      ctx.pose().scale(scale * animScale, scale * animScale);
-      ctx.pose().translate(-cx, -cy);
+      ctx.pose().mul(DropdownStyle.transform(cx, cy, scale));
 
       for (Module.Category cat : panelPos.keySet()) {
          this.renderPanel(ctx, smx, smy, cat);
@@ -417,14 +397,8 @@ public class DropdownGui extends Screen {
       int py = pos[1];
       int height = this.panelH(cat);
       int scroll = this.clampPanelScroll(cat);
-      // Screenshot style: soft shadow + dark body + near-black header + thin border
       RenderUtil.roundedRect(ctx, px + 1, py + 3, PW, height, PANEL_R, 0x55000000);
       RenderUtil.roundedRect(ctx, px, py, PW, height, PANEL_R, C_BODY);
-      RenderUtil.roundedRect(ctx, px, py, PW, HDR, PANEL_R, C_HEADER);
-      ctx.fill(px, py + HDR - PANEL_R, px + PW, py + HDR, C_HEADER);
-      guiText(ctx, ClickGuiModule.t(cat.getName()), px + 6, py + 5, 0xFFF2F4F7, false);
-      String catIcon = categoryIcon(cat);
-      guiText(ctx, catIcon, px + PW - guiWidth(catIcon) - 7, py + 5, 0xFFB9C0CC, false);
       ctx.enableScissor(px, py + HDR, px + PW, py + height);
       int ey = py + HDR - scroll;
       int clippedMouseY = my >= py + HDR && my < py + height ? my : Integer.MIN_VALUE;
@@ -441,8 +415,8 @@ public class DropdownGui extends Screen {
          }
       }
       ctx.disableScissor();
+      this.drawHeader(ctx, px, py, ClickGuiModule.t(cat.getName()), categoryIcon(cat));
       RenderUtil.maskCorners(ctx, px, py, PW, height, PANEL_R, C_BORDER, false, false, true, true);
-      RenderUtil.roundedOutline(ctx, px, py, PW, height, PANEL_R, 1.0F, C_BORDER);
       if (this.contentH(cat) > height) {
          int body = height - HDR;
          int thumb = Math.max(10, body * body / (this.contentH(cat) - HDR));
@@ -455,18 +429,17 @@ public class DropdownGui extends Screen {
       int height = this.moduleH(mod);
       boolean hover = mx >= px && mx < px + PW && my >= ey && my < ey + height;
       if (mod.isEnabled()) {
-         // Reference teal -> blue highlight, full-bleed like screenshot
          RenderUtil.horizontalGradient(ctx, px, ey, px + PW, ey + height,
-            new Color(74, 157, 174, 238), new Color(44, 108, 169, 238));
+            new Color(62, 130, 132, 248), new Color(35, 94, 139, 248));
       }
       if (hover) {
          ctx.fill(px, ey, px + PW, ey + height, 0x18FFFFFF);
       }
       List<String> lines = wrapText(moduleLabel(mod), PW - 24);
       for (int i = 0; i < lines.size(); i++) {
-         guiText(ctx, lines.get(i), px + 6, ey + 3 + i * 12, mod.isEnabled() ? 0xFFF4F8FB : 0xFFAEB6C2, false);
+         guiText(ctx, lines.get(i), px + 6, ey + 6 + i * 12, mod.isEnabled() ? 0xFFF4F8FB : 0xFFB4B3BE, false);
       }
-      chevron(ctx, px + PW - 12, ey + 7, expanded.contains(mod), mod.isEnabled() ? 0xFFEAF4F7 : 0xFF7E8694);
+      chevron(ctx, px + PW - 12, ey + height / 2 - 2, expanded.contains(mod), mod.isEnabled() ? 0xFFEAF4F7 : 0xFF9797A3);
    }
 
    private void renderSettingRow(GuiGraphicsExtractor ctx, int mx, int my, Setting<?> setting, int px, int ey) {
@@ -557,9 +530,9 @@ public class DropdownGui extends Screen {
    }
 
    public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
-      float sc = this.guiScale();
-      int mx = (int)((click.x() - this.width / 2.0) / sc + this.width / 2.0);
-      int my = (int)((click.y() - this.height / 2.0) / sc + this.height / 2.0);
+      Vector2f mouse = this.screenMouse(click.x(), click.y());
+      int mx = (int)mouse.x;
+      int my = (int)mouse.y;
       int btn = click.button();
       if (colorPicker != null) {
          int bx = cpX;
@@ -852,9 +825,9 @@ public class DropdownGui extends Screen {
    }
 
    public boolean mouseScrolled(double mx, double my, double hAmt, double vAmt) {
-      float scale = this.guiScale();
-      int x = (int)((mx - this.width / 2.0) / scale + this.width / 2.0);
-      int y = (int)((my - this.height / 2.0) / scale + this.height / 2.0);
+      Vector2f mouse = this.screenMouse(mx, my);
+      int x = (int)mouse.x;
+      int y = (int)mouse.y;
       for (ToolPanel tool : this.toolPositions.keySet()) {
          int[] geometry = this.toolGeometry(tool);
          if (this.inToolPanel(x, y, geometry)) {
@@ -975,7 +948,7 @@ public class DropdownGui extends Screen {
    }
 
    private int panelH(Module.Category cat) {
-      return Math.min(this.contentH(cat), this.panelLimit);
+      return Math.min(this.contentH(cat), this.panelLimits.getOrDefault(cat, this.panelLimit));
    }
 
    private int clampPanelScroll(Module.Category cat) {
@@ -1010,7 +983,7 @@ public class DropdownGui extends Screen {
    }
 
    private static int acc(int y, int alpha) {
-      return OyVey.colorManager.getColorWithAlpha(y, alpha);
+      return Math.max(0, Math.min(255, alpha)) << 24 | 0x4A9DAE;
    }
 
    private static void drawCheckbox(GuiGraphicsExtractor ctx, int cbX, int cbY, boolean on, int ey) {
@@ -1074,14 +1047,16 @@ public class DropdownGui extends Screen {
 
    private void drawMenuFrame(GuiGraphicsExtractor ctx, int px, int py, int height, String title, long badge) {
       RenderUtil.roundedRect(ctx, px + 1, py + 2, PW, height, 3, 0x55000000);
-      RenderUtil.roundedRect(ctx, px, py, PW, height, 3, 0xF019191F);
-      RenderUtil.roundedRect(ctx, px, py, PW, HDR, 3, 0xFA202026);
-      ctx.fill(px, py + HDR - 3, px + PW, py + HDR, 0xFA202026);
-      guiText(ctx, title, px + 6, py + 5, 0xFFE6E7EB, false);
-      if (badge > 0) {
-         String count = Long.toString(badge);
-         guiText(ctx, count, px + PW - guiWidth(count) - 7, py + 5, 0xFF80BDD8, false);
-      }
+      RenderUtil.roundedRect(ctx, px, py, PW, height, 3, C_BODY);
+      this.drawHeader(ctx, px, py, title, 6);
+   }
+
+   private void drawHeader(GuiGraphicsExtractor ctx, int px, int py, String title, int icon) {
+      RenderUtil.roundedRect(ctx, px, py, PW, HDR, PANEL_R, C_HEADER);
+      ctx.fill(px, py + HDR - PANEL_R, px + PW, py + HDR, C_HEADER);
+      ctx.text(Minecraft.getInstance().font, Component.literal(title)
+         .withStyle(style -> style.withFont(GUI_HEADER_FONT)), px + 6, py + 8, 0xFFF1F1F4, false);
+      DropdownStyle.icon(ctx, px + PW - 18, py + 7, icon);
    }
 
    private void renderScriptsMenu(GuiGraphicsExtractor ctx, int mx, int my) {

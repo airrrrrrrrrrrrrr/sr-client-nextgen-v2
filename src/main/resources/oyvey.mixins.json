@@ -21,6 +21,7 @@
     "entity.MixinPlayer",
     "input.MixinKeyboardHandler",
     "input.MixinKeyboardInput",
+    "input.KeyMappingAccessor",
     "input.MixinMouseHandler",
     "network.MixinClientPacketListener",
     "network.accessor.MovePlayerPacketAccessor",
