@@ -1,9 +1,7 @@
 package me.alpha432.oyvey.mixin.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import me.alpha432.oyvey.OyVey;
-import me.alpha432.oyvey.features.cape.CapeEntry;
-import me.alpha432.oyvey.features.cape.CapeTextureLoader;
+import me.alpha432.oyvey.features.cape.SrCapeTexture;
 import me.alpha432.oyvey.features.modules.render.Chams;
 import me.alpha432.oyvey.util.render.Layers;
 import net.minecraft.client.model.Model;
@@ -73,11 +71,8 @@ public class MixinSubmitNodeCollection {
    private static Identifier getCapeTexture() {
       if (!Chams.renderingOwnCape) {
          return null;
-      } else if (OyVey.capeManager != null && OyVey.capeManager.hasActiveCape()) {
-         CapeEntry active = OyVey.capeManager.getActiveCape();
-         return active != null ? CapeTextureLoader.get(active.source()) : null;
       } else {
-         return null;
+         return SrCapeTexture.get();
       }
    }
 }

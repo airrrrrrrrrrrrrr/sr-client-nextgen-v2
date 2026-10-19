@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.Feature;
+import me.alpha432.oyvey.features.gui.items.Item;
 import me.alpha432.oyvey.features.gui.items.buttons.ModuleButton;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.client.HudModule;
@@ -27,6 +28,7 @@ public class HudEditorScreen extends Screen {
 
    private void load() {
       Widget hud = new Widget("Hud", 50, 50, true);
+      hud.width = 190;
       OyVey.moduleManager.stream().filter(m -> m.getCategory() == Module.Category.HUD && !m.hidden).map(ModuleButton::new).forEach(hud::addButton);
       this.components.add(hud);
       this.components.forEach(component -> component.getItems().sort(Comparator.comparing(Feature::getName)));
@@ -34,7 +36,14 @@ public class HudEditorScreen extends Screen {
 
    public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
       this.anyHover = false;
-      this.components.forEach(component -> component.drawScreen(context, mouseX, mouseY, delta));
+      // Legacy controls draw labels through Item's shared frame context.
+      // The HUD editor must supply it just like the main legacy GUI does.
+      Item.context = context;
+      try {
+         this.components.forEach(component -> component.drawScreen(context, mouseX, mouseY, delta));
+      } finally {
+         Item.context = null;
+      }
    }
 
    public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {

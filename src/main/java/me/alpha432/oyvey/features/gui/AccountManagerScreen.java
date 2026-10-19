@@ -1,618 +1,240 @@
 package me.alpha432.oyvey.features.gui;
 
-import java.awt.Color;
 import java.awt.Desktop;
-import java.awt.Desktop.Action;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.List;
-import java.util.Random;
 import java.util.UUID;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.auth.MicrosoftAuth;
+import me.alpha432.oyvey.auth.MinecraftTokenLogin;
 import me.alpha432.oyvey.util.render.RenderUtil;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
-public class AccountManagerScreen extends Screen {
-   private volatile boolean microsoftBusy;
-   private static final int CARD_W = 240;
-   private static final int ENTRY_H = 18;
-   private static final int ENTRY_GAP = 3;
-   private static final int MAX_VISIBLE = 7;
-   private static final int FH = 18;
-   private static final int STARS = 90;
-   private final float[] sx = new float[90];
-   private final float[] sy = new float[90];
-   private final float[] svx = new float[90];
-   private final float[] svy = new float[90];
-   private final float[] sa = new float[90];
-   private final AccountManagerScreen.SimpleField addField = new AccountManagerScreen.SimpleField();
-   private boolean tokenMode = false;
-   private volatile String statusMsg = "";
-   private volatile boolean statusOk = false;
-   private int scrollOffset = 0;
-   private long openTime;
+public class AccountManagerScreen extends ClientMenuScreen {
+   private final Screen parent;
+   private MenuField username, token;
+   private Button login, microsoft, use, remove, offlineTab, tokenTab;
+   private boolean tokenMode;
+   private boolean busy;
+   private int generation, scroll, selected = -1;
+   private int listX, listY, listW, rows, rightX, rightW;
+   private String status = "Choose an account or sign in.";
+   private boolean success = true;
 
-   public AccountManagerScreen() {
-      super(Component.literal("accounts"));
+   public AccountManagerScreen() { this(new CustomMainMenuScreen()); }
+   public AccountManagerScreen(Screen parent) { super("Accounts"); this.parent = parent; }
+
+   @Override protected void init() {
+      String previousName = username == null ? "" : username.getValue();
+      String previousToken = token == null ? "" : token.getValue();
+      layout(540, 332);
+      listX = px + 14; listY = py + 65;
+      listW = (pw - 42) / 2; rightX = listX + listW + 14; rightW = pw - 28 - listW - 14;
+      rows = Math.max(1, (ph - 117) / 39);
+      int half = (rightW - 6) / 2;
+      offlineTab = button("Username", rightX, listY, half, 22, () -> setMode(false));
+      tokenTab = button("Token", rightX + half + 6, listY, rightW - half - 6, 22, () -> setMode(true));
+      username = field("Offline username", rightX, listY + 28, rightW, 22, 16, false);
+      username.setValue(previousName);
+      token = field("Paste Minecraft access token", rightX, listY + 28, rightW, 22, 16384, true);
+      token.setValue(previousToken);
+      login = button("Add & use", rightX, listY + 56, rightW, 22, this::submit);
+      microsoft = button("Microsoft sign-in", rightX, listY + 84, rightW, 22, this::startMicrosoftLogin);
+      use = button("Use selected", listX, py + ph - 44, (listW - 6) / 2, 24, this::loginSelected);
+      remove = button("Remove", listX + (listW - 6) / 2 + 6, py + ph - 44,
+         listW - (listW - 6) / 2 - 6, 24, this::removeSelected);
+      button("Back", rightX + Math.max(0, rightW - 70), py + ph - 44, Math.min(70, rightW), 24, this::onClose);
+      setMode(tokenMode);
+      updateButtons();
    }
 
-   public void init() {
-      this.openTime = System.currentTimeMillis();
-      this.statusMsg = "";
-      Random rng = new Random();
-
-      for (int i = 0; i < 90; i++) {
-         this.sx[i] = rng.nextFloat() * this.width;
-         this.sy[i] = rng.nextFloat() * this.height;
-         float angle = rng.nextFloat() * 6.2831855F;
-         float spd = 0.04F + rng.nextFloat() * 0.14F;
-         this.svx[i] = (float)Math.cos(angle) * spd;
-         this.svy[i] = (float)Math.sin(angle) * spd;
-         this.sa[i] = 0.25F + rng.nextFloat() * 0.55F;
-      }
+   private void setMode(boolean mode) {
+      if (tokenMode != mode && token != null) token.setValue("");
+      tokenMode = mode;
+      username.visible = !mode;
+      token.visible = mode;
+      login.setMessage(styled(mode ? "Log in with token" : "Add & use", false));
+      offlineTab.active = !busy && mode;
+      tokenTab.active = !busy && !mode;
+      setFocused(mode ? token : username);
    }
 
-   public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
-      float age = (float)(System.currentTimeMillis() - this.openTime) / 1000.0F;
-      float fadeIn = Mth.clamp(age / 0.6F, 0.0F, 1.0F);
-      int accent = OyVey.colorManager.getColorAsInt();
-      int aR = accent >> 16 & 0xFF;
-      int aG = accent >> 8 & 0xFF;
-      int aB = accent & 0xFF;
-      g.fill(0, 0, this.width, this.height, -16316657);
-      float pulse = (float)(Math.sin(age * 0.7) * 0.5 + 0.5);
-      RenderUtil.verticalGradient(g, 0.0F, 0.0F, this.width, this.height * 0.5F, new Color(aR, aG, aB, (int)(12.0F + pulse * 16.0F)), new Color(0, 0, 0, 0));
-
-      for (int i = 0; i < 90; i++) {
-         this.sx[i] = this.sx[i] + this.svx[i];
-         if (this.sx[i] < 0.0F) {
-            this.sx[i] = this.sx[i] + this.width;
-         }
-
-         if (this.sx[i] > this.width) {
-            this.sx[i] = this.sx[i] - this.width;
-         }
-
-         this.sy[i] = this.sy[i] + this.svy[i];
-         if (this.sy[i] < 0.0F) {
-            this.sy[i] = this.sy[i] + this.height;
-         }
-
-         if (this.sy[i] > this.height) {
-            this.sy[i] = this.sy[i] - this.height;
-         }
-
-         int a = (int)(this.sa[i] * fadeIn * 140.0F);
-         g.fill((int)this.sx[i], (int)this.sy[i], (int)this.sx[i] + 1, (int)this.sy[i] + 1, argb(a, aR, aG, aB));
+   @Override public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
+      background(g, "Accounts", "Playing as " + OyVey.accountManager.getCurrentName());
+      List<String> accounts = OyVey.accountManager.getAccounts();
+      scroll = Mth.clamp(scroll, 0, Math.max(0, accounts.size() - rows));
+      RenderUtil.roundedRect(g, listX, listY, listW, rows * 39 - 3, 5, 0xFF0C1420);
+      for (int row = 0; row < rows && scroll + row < accounts.size(); row++) {
+         int index = scroll + row, y = listY + row * 39;
+         String name = accounts.get(index);
+         boolean current = name.equals(OyVey.accountManager.getCurrentName());
+         boolean hover = hit(mx, my, listX, y, listW, 36);
+         if (index == selected || hover) RenderUtil.roundedRect(g, listX, y, listW, 36, 4,
+            index == selected ? 0xFF253750 : 0xFF192538);
+         if (current) g.fill(listX, y + 5, listX + 2, y + 31, accent);
+         text(g, fit(name, listW - 22), listX + 9, y + 4, current ? accent : TEXT, true);
+         String type = OyVey.accountManager.isToken(name) ? "Token / session only"
+            : OyVey.accountManager.isMicrosoft(name) ? "Microsoft" : "Offline";
+         text(g, fit(type + (current ? " / active" : ""), listW - 18), listX + 9, y + 20, MUTED, false);
       }
-
-      String title = "ACCOUNTS";
-      float titleScale = 2.2F;
-      int titleY = (int)(this.height * 0.18F);
-      g.pose().pushMatrix();
-      g.pose().scale(titleScale, titleScale);
-      int tx = (int)((this.width / 2.0F - this.font.width(title) * titleScale / 2.0F) / titleScale);
-      int ty = (int)((titleY - 6.0F) / titleScale);
-
-      for (int d = 3; d >= 1; d--) {
-         int ga = (int)(fadeIn * 35.0F / d);
-         int gc = argb(ga, aR, aG, aB);
-         g.text(this.font, title, tx - d, ty, gc, false);
-         g.text(this.font, title, tx + d, ty, gc, false);
-         g.text(this.font, title, tx, ty - d, gc, false);
-         g.text(this.font, title, tx, ty + d, gc, false);
+      if (accounts.isEmpty()) text(g, "No saved accounts", listX + 8, listY + 12, MUTED, false);
+      if (accounts.size() > rows) {
+         int h = rows * 39 - 3, thumb = Math.max(12, h * rows / accounts.size());
+         int y = listY + (h - thumb) * scroll / (accounts.size() - rows);
+         g.fill(listX + listW - 3, y, listX + listW - 1, y + thumb, accent);
       }
-
-      g.text(this.font, title, tx + 1, ty + 1, argb((int)(fadeIn * 120.0F), 0, 0, 0), false);
-      g.text(this.font, title, tx, ty, argb((int)(fadeIn * 255.0F), aR, aG, aB), false);
-      g.pose().popMatrix();
-      List<String> accs = OyVey.accountManager.getAccounts();
-      String current = OyVey.accountManager.getCurrentName();
-      int visibleCount = Math.min(accs.size(), 7);
-      int listH = visibleCount * 21;
-      int addRowH = 32;
-      int headerH = 30;
-      int CARD_H = headerH + listH + addRowH + 10 + 24;
-      int cx = this.width / 2 - 120;
-      int cy = (int)(this.height * 0.32F);
-      RenderUtil.dropShadow(g, cx, cy, 240, CARD_H, 8.0F, 14.0F, (int)(fadeIn * 145.0F));
-      RenderUtil.roundedRectGradient(
-         g, cx, cy, 240, CARD_H, 8.0F, argb((int)(fadeIn * 228.0F), 14, 14, 36), argb((int)(fadeIn * 218.0F), 7, 7, 22), true
-      );
-      RenderUtil.roundedOutline(g, cx, cy, 240, CARD_H, 8.0F, 0.9F, argb((int)(fadeIn * 115.0F), aR, aG, aB));
-      RenderUtil.roundedRect(g, cx + 4, cy + 8, 2, Math.max(4, CARD_H - 16), 1, argb((int)(fadeIn * 220.0F), aR, aG, aB));
-      String playingAs = "playing as: " + (current.isEmpty() ? "none" : current);
-      g.centeredText(this.font, playingAs, this.width / 2, cy + 8, argb((int)(fadeIn * 180.0F), aR, aG, aB));
-      g.fill(cx + 6, cy + headerH - 2, cx + 240 - 6, cy + headerH - 1, argb((int)(fadeIn * 60.0F), aR, aG, aB));
-      int lx = cx + 8;
-      int lw = 224;
-      int ly = cy + headerH;
-      int delW = 12;
-      int start = Mth.clamp(this.scrollOffset, 0, Math.max(0, accs.size() - 7));
-      int end = Math.min(accs.size(), start + 7);
-
-      for (int i = start; i < end; i++) {
-         String name = accs.get(i);
-         boolean isActive = name.equals(current);
-         int ey = ly + (i - start) * 21;
-         boolean hov = mx >= lx && mx < lx + lw - delW - 4 && my >= ey && my < ey + 18;
-         boolean delHov = mx >= lx + lw - delW && mx < lx + lw && my >= ey && my < ey + 18;
-         int ebg = isActive
-            ? argb((int)(fadeIn * 180.0F), 24, 24, 48)
-            : (hov ? argb((int)(fadeIn * 140.0F), 20, 20, 38) : argb((int)(fadeIn * 100.0F), 12, 12, 28));
-         RenderUtil.roundedRect(g, lx, ey, lw, 18, 2, ebg);
-         if (isActive) {
-            g.fill(lx, ey + 2, lx + 2, ey + 18 - 2, argb((int)(fadeIn * 220.0F), aR, aG, aB));
-         }
-
-         int nameColor = isActive
-            ? argb((int)(fadeIn * 255.0F), aR, aG, aB)
-            : (hov ? argb((int)(fadeIn * 230.0F), 221, 238, 255) : argb((int)(fadeIn * 185.0F), 153, 170, 187));
-         boolean isMs = OyVey.accountManager.isMicrosoft(name);
-         int nameX = lx + (isMs ? 16 : 6);
-         int nameBudget = lw - delW - (isMs ? 26 : 16);
-         String display = name;
-
-         while (this.font.width(display) > nameBudget && display.length() > 1) {
-            display = display.substring(0, display.length() - 1);
-         }
-
-         if (!display.equals(name)) {
-            display = display + "\u2026";
-         }
-
-         if (isMs) {
-            int gx = lx + 5;
-            int gy = ey + 5;
-            g.fill(gx, gy, gx + 3, gy + 3, argb((int)(fadeIn * 255.0F), 242, 80, 34));
-            g.fill(gx + 4, gy, gx + 7, gy + 3, argb((int)(fadeIn * 255.0F), 127, 186, 0));
-            g.fill(gx, gy + 4, gx + 3, gy + 7, argb((int)(fadeIn * 255.0F), 0, 164, 239));
-            g.fill(gx + 4, gy + 4, gx + 7, gy + 7, argb((int)(fadeIn * 255.0F), 255, 185, 0));
-         }
-
-         g.text(this.font, display, nameX, ey + 5, nameColor, false);
-         if (isActive) {
-            String badge = "\u2713";
-            int bx2 = lx + lw - delW - this.font.width(badge) - 6;
-            g.text(this.font, badge, bx2, ey + 5, argb((int)(fadeIn * 220.0F), aR, aG, aB), false);
-         }
-
-         int xColor = delHov ? argb((int)(fadeIn * 255.0F), 255, 80, 80) : argb((int)(fadeIn * 140.0F), 119, 68, 68);
-         g.centeredText(this.font, "\u2715", lx + lw - delW / 2, ey + 5, xColor);
+      if (ph >= 300) {
+         text(g, fit(tokenMode ? "Minecraft Java access tokens only." : "Offline accounts work on offline servers.", rightW),
+            rightX, listY + 130, MUTED, false);
+         text(g, fit(tokenMode ? "Token expires; it is not saved to disk." : "Use Microsoft for authenticated servers.", rightW),
+            rightX, listY + 147, MUTED, false);
       }
-
-      if (accs.size() > 7) {
-         int barX = cx + 240 - 4;
-         int barY = cy + headerH;
-         float ratio = 7.0F / accs.size();
-         int thumbH = Math.max(10, (int)(listH * ratio));
-         int thumbY = barY + (int)((float)(listH - thumbH) * start / (accs.size() - 7));
-         g.fill(barX, barY, barX + 2, barY + listH, argb((int)(fadeIn * 40.0F), 255, 255, 255));
-         g.fill(barX, thumbY, barX + 2, thumbY + thumbH, argb((int)(fadeIn * 160.0F), aR, aG, aB));
-      }
-
-      int fy = cy + headerH + listH + 8;
-      int addBtnW = 32;
-      int toggleW = 44;
-      int fw = lw - toggleW - addBtnW - 8;
-      int toggleX = lx;
-      int fieldX = lx + toggleW + 4;
-      int abx = fieldX + fw + 4;
-      boolean toggleHov = mx >= toggleX && mx < toggleX + toggleW && my >= fy && my < fy + 18;
-      RenderUtil.roundedRect(g, toggleX, fy, toggleW, 18, 2, argb((int)(fadeIn * 180.0F), 16, 16, 34));
-      g.fill(toggleX, fy, toggleX + toggleW, fy + 1, argb((int)(fadeIn * 160.0F), aR, aG, aB));
-      g.centeredText(this.font, this.tokenMode ? "Token" : "User", toggleX + toggleW / 2, fy + 5, argb((int)(fadeIn * (toggleHov ? 255 : 200)), aR, aG, aB));
-      boolean btnHov = mx >= abx && mx < abx + addBtnW && my >= fy && my < fy + 18;
-      RenderUtil.roundedRect(g, fieldX, fy, fw, 18, 2, argb((int)(fadeIn * 180.0F), 16, 16, 34));
-      g.fill(fieldX, fy, fieldX + fw, fy + 1, argb((int)(fadeIn * 160.0F), aR, aG, aB));
-      String disp = this.addField.text;
-      boolean showCursor = this.addField.cursorVisible();
-      String rendered = disp + (showCursor ? "|" : "");
-
-      while (this.font.width(rendered) > fw - 8 && rendered.length() > 1) {
-         rendered = rendered.substring(1);
-      }
-
-      if (disp.isEmpty()) {
-         g.text(this.font, this.tokenMode ? "paste token..." : "add username...", fieldX + 4, fy + 5, argb((int)(fadeIn * 70.0F), 170, 187, 204), false);
-      } else {
-         g.text(this.font, rendered, fieldX + 4, fy + 5, argb((int)(fadeIn * 230.0F), 221, 238, 255), false);
-      }
-
-      int abg = btnHov ? argb((int)(fadeIn * 220.0F), 24, 24, 48) : argb((int)(fadeIn * 160.0F), 12, 12, 28);
-      RenderUtil.roundedRect(g, abx, fy, addBtnW, 18, 2, abg);
-      g.fill(abx, fy, abx + addBtnW, fy + 1, argb((int)(fadeIn * (btnHov ? 200 : 140)), aR, aG, aB));
-      g.centeredText(this.font, this.tokenMode ? "Log" : "Add", abx + addBtnW / 2, fy + 5, argb((int)(fadeIn * (btnHov ? 255 : 200)), aR, aG, aB));
-      int msY = fy + 24;
-      boolean msHov = mx >= lx && mx < lx + lw && my >= msY && my < msY + 18;
-      RenderUtil.roundedRect(g, lx, msY, lw, 18, 2, argb((int)(fadeIn * (msHov ? 210 : 160)), msHov ? 22 : 14, msHov ? 22 : 14, msHov ? 44 : 30));
-      RenderUtil.roundedOutline(g, lx, msY, lw, 18, 3.0F, 0.8F, argb((int)(fadeIn * (msHov ? 220 : 90)), aR, aG, aB));
-      g.centeredText(this.font, "Microsoft sign-in", lx + lw / 2, msY + 5, argb((int)(fadeIn * (msHov ? 255 : 220)), aR, aG, aB));
-      if (!this.statusMsg.isEmpty()) {
-         int sc = this.statusOk ? argb((int)(fadeIn * 220.0F), 90, 220, 120) : argb((int)(fadeIn * 220.0F), 255, 90, 90);
-         g.centeredText(this.font, this.statusMsg, this.width / 2, msY + 18 + 6, sc);
-      }
-
-      g.text(this.font, "ESC to go back", cx, cy + CARD_H + 4, argb((int)(fadeIn * 100.0F), 68, 85, 102), false);
-      String ver = "v2.0";
-      g.text(this.font, ver, 4, this.height - 10, argb((int)(fadeIn * 200.0F), 74, 102, 136), false);
+      updateButtons();
+      super.extractRenderState(g, mx, my, delta);
+      text(g, fit(status, pw - 28), px + 14, py + ph - 15, success ? MUTED : 0xFFFFA6A6, false);
    }
 
-   public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
-      double mx = click.x();
-      double my = click.y();
-      List<String> accs = OyVey.accountManager.getAccounts();
-      String current = OyVey.accountManager.getCurrentName();
-      int visibleCount = Math.min(accs.size(), 7);
-      int listH = visibleCount * 21;
-      int headerH = 30;
-      int cx = this.width / 2 - 120;
-      int cy = (int)(this.height * 0.32F);
-      int lx = cx + 8;
-      int lw = 224;
-      int delW = 12;
-      int ly = cy + headerH;
-      int start = Mth.clamp(this.scrollOffset, 0, Math.max(0, accs.size() - 7));
-      int end = Math.min(accs.size(), start + 7);
-      if (click.button() == 0) {
-         for (int i = start; i < end; i++) {
-            String name = accs.get(i);
-            int ey = ly + (i - start) * 21;
-            if (mx >= lx + lw - delW && mx < lx + lw && my >= ey && my < ey + 18) {
-               if (name.equals(current)) {
-                  this.statusMsg = "can't remove active account";
-                  this.statusOk = false;
-               } else {
-                  OyVey.accountManager.removeAccount(name);
-                  this.statusMsg = "removed " + name;
-                  this.statusOk = false;
-                  OyVey.configManager.save();
-               }
+   private void updateButtons() {
+      boolean valid = selected >= 0 && selected < OyVey.accountManager.getAccounts().size();
+      use.active = remove.active = !busy && valid;
+      login.active = microsoft.active = !busy;
+      offlineTab.active = !busy && tokenMode;
+      tokenTab.active = !busy && !tokenMode;
+      username.setEditable(!busy); token.setEditable(!busy);
+   }
 
-               return true;
-            }
-
-            if (mx >= lx && mx < lx + lw - delW - 4 && my >= ey && my < ey + 18) {
-               if (!name.equals(current)) {
-                  if (OyVey.accountManager.isToken(name)) {
-                     this.reloginToken(name);
-                  } else if (OyVey.accountManager.isMicrosoft(name)) {
-                     this.reloginMicrosoft(name);
-                  } else {
-                     boolean ok = OyVey.accountManager.switchAccount(name);
-                     this.statusMsg = ok ? "switched to " + name : "switch failed";
-                     this.statusOk = ok;
-                  }
-               }
-
-               return true;
-            }
-         }
-
-         int addRowTop = cy + headerH + listH + 8;
-         int addBtnW = 32;
-         int toggleW = 44;
-         int fw = lw - toggleW - addBtnW - 8;
-         int toggleX = lx;
-         int fieldX = lx + toggleW + 4;
-         int abx = fieldX + fw + 4;
-         if (mx >= toggleX && mx < toggleX + toggleW && my >= addRowTop && my < addRowTop + 18) {
-            this.tokenMode = !this.tokenMode;
-            this.addField.text = "";
-            return true;
-         }
-
-         if (mx >= abx && mx < abx + addBtnW && my >= addRowTop && my < addRowTop + 18) {
-            this.doAdd();
-            return true;
-         }
-
-         int msY = cy + headerH + listH + 8 + 24;
-         if (mx >= lx && mx < lx + lw && my >= msY && my < msY + 18) {
-            this.startMicrosoftLogin();
+   @Override public boolean mouseClicked(MouseButtonEvent event, boolean doubled) {
+      if (event.button() == 0 && hit(event.x(), event.y(), listX, listY, listW, rows * 39 - 3)) {
+         int index = scroll + (int)((event.y() - listY) / 39);
+         if (index < OyVey.accountManager.getAccounts().size()) {
+            selected = index;
+            if (doubled && !busy) loginSelected();
             return true;
          }
       }
-
-      return super.mouseClicked(click, doubled);
+      return super.mouseClicked(event, doubled);
    }
 
-   public boolean mouseScrolled(double mx, double my, double dx, double dy) {
-      int max = Math.max(0, OyVey.accountManager.getAccounts().size() - 7);
-      this.scrollOffset = Mth.clamp(this.scrollOffset - (int)Math.signum(dy), 0, max);
+   @Override public boolean mouseScrolled(double x, double y, double dx, double dy) {
+      if (!hit(x, y, listX, listY, listW, rows * 39)) return super.mouseScrolled(x, y, dx, dy);
+      scroll = Mth.clamp(scroll - (int)Math.signum(dy), 0,
+         Math.max(0, OyVey.accountManager.getAccounts().size() - rows));
       return true;
    }
 
-   public boolean keyPressed(KeyEvent input) {
-      int key = input.input();
-      if (key == 256) {
-         this.minecraft.setScreen(new CustomMainMenuScreen());
+   @Override public boolean keyPressed(KeyEvent event) {
+      if ((event.input() == GLFW.GLFW_KEY_ENTER || event.input() == GLFW.GLFW_KEY_KP_ENTER)
+         && (username.isFocused() || token.isFocused())) {
+         if (!busy) submit();
          return true;
-      } else if (key == 257 || key == 335) {
-         this.doAdd();
-         return true;
-      } else if (key == 259) {
-         this.addField.backspace();
-         return true;
-      } else {
-         return super.keyPressed(input);
       }
+      return super.keyPressed(event);
    }
 
-   public boolean charTyped(CharacterEvent input) {
-      this.addField.type(input.codepoint());
-      return true;
-   }
-
-   private void doAdd() {
-      if (this.tokenMode) {
-         String token = this.addField.text.trim();
-         if (token.isEmpty()) {
-            this.statusMsg = "paste a token";
-            this.statusOk = false;
-         } else {
-            this.tokenLogin(token);
+   private void submit() {
+      if (busy) return;
+      if (tokenMode) {
+         String value = token.getValue().trim();
+         token.setValue("");
+         tokenLogin(value);
+      } else {
+         String name = username.getValue().trim();
+         if (!name.matches("[A-Za-z0-9_]{1,16}")) { message("Use 1–16 letters, numbers or underscores.", false); return; }
+         if (OyVey.accountManager.isMicrosoft(name) || OyVey.accountManager.isToken(name)) {
+            message("Select the saved account to sign in.", false); return;
          }
-
-         return;
+         if (OyVey.accountManager.switchAccount(name)) {
+            OyVey.accountManager.addAccount(name);
+            OyVey.configManager.save();
+            username.setValue("");
+            message("Playing as " + name, true);
+         } else message("Could not switch account.", false);
       }
+   }
 
-      String name = this.addField.text.trim();
-      if (name.isEmpty()) {
-         this.statusMsg = "enter a username";
-         this.statusOk = false;
-      } else if (OyVey.accountManager.getAccounts().contains(name)) {
-         this.statusMsg = name + " already saved";
-         this.statusOk = false;
-      } else {
-         OyVey.accountManager.addAccount(name);
-         OyVey.configManager.save();
-         this.statusMsg = "saved " + name;
-         this.statusOk = true;
-         this.addField.text = "";
-      }
+   private void loginSelected() {
+      List<String> accounts = OyVey.accountManager.getAccounts();
+      if (busy || selected < 0 || selected >= accounts.size()) return;
+      String name = accounts.get(selected);
+      if (name.equals(OyVey.accountManager.getCurrentName())) { message(name + " is already active.", true); return; }
+      if (OyVey.accountManager.isToken(name)) {
+         String saved = OyVey.accountManager.getToken(name);
+         if (saved == null || saved.isBlank()) { setMode(true); message("Paste a fresh token for " + name + ".", false); }
+         else tokenLogin(saved);
+      } else if (OyVey.accountManager.isMicrosoft(name)) {
+         String session = OyVey.accountManager.getMicrosoftSession(name);
+         if (session == null || session.isBlank()) { message("Use Microsoft sign-in for this account.", false); return; }
+         busy = true; int attempt = ++generation;
+         message("Refreshing Microsoft session…", true);
+         MicrosoftAuth.refreshAndLogin(session,
+            (n, id, access, refreshed) -> minecraft.execute(() -> complete(attempt, n, id, access, refreshed)),
+            error -> minecraft.execute(() -> fail(attempt, "Session expired. Use Microsoft sign-in again.")));
+      } else message(OyVey.accountManager.switchAccount(name) ? "Playing as " + name : "Account switch failed.",
+         name.equals(OyVey.accountManager.getCurrentName()));
+   }
+
+   private void removeSelected() {
+      List<String> accounts = OyVey.accountManager.getAccounts();
+      if (busy || selected < 0 || selected >= accounts.size()) return;
+      String name = accounts.get(selected);
+      OyVey.accountManager.removeAccount(name);
+      OyVey.configManager.save();
+      selected = -1;
+      message("Removed " + name + " from the list.", true);
+   }
+
+   private void tokenLogin(String value) {
+      if (value.isBlank()) { message("Paste a Minecraft access token first.", false); return; }
+      busy = true; int attempt = ++generation;
+      message("Validating Minecraft profile…", true);
+      String normalized;
+      try { normalized = MinecraftTokenLogin.normalize(value); }
+      catch (IllegalArgumentException invalid) { fail(attempt, "Paste a valid Minecraft access token."); return; }
+      MinecraftTokenLogin.login(normalized,
+         profile -> minecraft.execute(() -> complete(attempt, profile.name(), profile.id(), normalized, null)),
+         error -> minecraft.execute(() -> fail(attempt, error)));
    }
 
    private void startMicrosoftLogin() {
-      if (this.microsoftBusy) {
-         this.statusMsg = "Microsoft sign-in is already running...";
-         this.statusOk = false;
-         return;
-      }
-
-      this.microsoftBusy = true;
-      this.statusMsg = "starting Microsoft sign-in...";
-      this.statusOk = true;
-      MicrosoftAuth.deviceCodeLogin((userCode, uri, directUri) -> {
-         this.statusMsg = "code copied to clipboard - paste " + userCode + " in the browser";
-         this.statusOk = true;
-         Minecraft.getInstance().execute(() -> {
-            try {
-               GLFW.glfwSetClipboardString(this.minecraft.getWindow().handle(), userCode);
-            } catch (Exception var4) {
-            }
-
-            openUrl(uri);
-         });
-      }, (name, uuid, token, sessionJson) -> Minecraft.getInstance().execute(() -> {
-         this.microsoftBusy = false;
-         boolean ok = OyVey.accountManager.setOnlineSession(name, uuid, token);
-         OyVey.accountManager.saveMicrosoftSession(name, sessionJson);
-         OyVey.configManager.save();
-         this.statusMsg = ok ? "signed in as " + name : "session swap failed";
-         this.statusOk = ok;
-      }), err -> {
-         this.microsoftBusy = false;
-         this.statusMsg = "sign-in failed: " + err;
-         this.statusOk = false;
-      });
+      if (busy) return;
+      busy = true; int attempt = ++generation;
+      message("Starting Microsoft sign-in…", true);
+      MicrosoftAuth.deviceCodeLogin((code, uri, direct) -> minecraft.execute(() -> {
+         if (attempt != generation) return;
+         message("Code: " + code + " (copied). Complete sign-in in your browser.", true);
+         minecraft.keyboardHandler.setClipboard(code);
+         try { if (Desktop.isDesktopSupported()) Desktop.getDesktop().browse(URI.create(uri)); }
+         catch (Exception ignored) { message("Open " + uri + " and enter " + code, true); }
+      }), (name, id, access, session) -> minecraft.execute(() -> complete(attempt, name, id, access, session)),
+         error -> minecraft.execute(() -> fail(attempt, "Microsoft sign-in failed or was cancelled.")));
    }
 
-   private void reloginMicrosoft(String name) {
-      if (this.microsoftBusy) {
-         this.statusMsg = "Microsoft sign-in is already running...";
-         this.statusOk = false;
-         return;
-      }
-
-      String session = OyVey.accountManager.getMicrosoftSession(name);
-      if (session != null && !session.isEmpty()) {
-         this.microsoftBusy = true;
-         this.statusMsg = "logging into " + name + "...";
-         this.statusOk = true;
-         MicrosoftAuth.refreshAndLogin(session, (n, uuid, token, newJson) -> Minecraft.getInstance().execute(() -> {
-            this.microsoftBusy = false;
-            boolean ok = OyVey.accountManager.setOnlineSession(n, uuid, token);
-            OyVey.accountManager.saveMicrosoftSession(n, newJson);
-            OyVey.configManager.save();
-            this.statusMsg = ok ? "signed in as " + n : "session swap failed";
-            this.statusOk = ok;
-         }), err -> {
-            this.microsoftBusy = false;
-            this.statusMsg = "session expired - use Microsoft sign-in again";
-            this.statusOk = false;
-         });
-      } else {
-         this.statusMsg = "no saved session for " + name + " - use Microsoft sign-in";
-         this.statusOk = false;
-      }
+   private void complete(int attempt, String name, UUID id, String access, String session) {
+      if (attempt != generation) return;
+      busy = false;
+      if (!OyVey.accountManager.setOnlineSession(name, id, access)) { message("Could not install the Minecraft session.", false); return; }
+      if (session == null) OyVey.accountManager.saveToken(name, access);
+      else OyVey.accountManager.saveMicrosoftSession(name, session);
+      OyVey.configManager.save();
+      message("Signed in as " + name, true);
    }
 
-   private void tokenLogin(String token) {
-      if (this.microsoftBusy) {
-         this.statusMsg = "a login is already running...";
-         this.statusOk = false;
-         return;
-      }
-
-      this.microsoftBusy = true;
-      this.statusMsg = "logging in with token...";
-      this.statusOk = true;
-      Thread t = new Thread(() -> {
-         try {
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest req = HttpRequest.newBuilder()
-               .uri(URI.create("https://api.minecraftservices.com/minecraft/profile"))
-               .header("Authorization", "Bearer " + token)
-               .GET()
-               .build();
-            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) {
-               Minecraft.getInstance().execute(() -> {
-                  this.microsoftBusy = false;
-                  this.statusMsg = "token rejected (HTTP " + resp.statusCode() + ")";
-                  this.statusOk = false;
-               });
-               return;
-            }
-
-            JsonObject obj = JsonParser.parseString(resp.body()).getAsJsonObject();
-            String name = obj.get("name").getAsString();
-            String id = obj.get("id").getAsString();
-            UUID uuid = parseUuid(id);
-            Minecraft.getInstance().execute(() -> {
-               boolean ok = OyVey.accountManager.setOnlineSession(name, uuid, token);
-               OyVey.accountManager.saveToken(name, token);
-               OyVey.configManager.save();
-               this.microsoftBusy = false;
-               this.statusMsg = ok ? "signed in as " + name : "session swap failed";
-               this.statusOk = ok;
-               this.addField.text = "";
-            });
-         } catch (Exception e) {
-            Minecraft.getInstance().execute(() -> {
-               this.microsoftBusy = false;
-               this.statusMsg = "login failed: " + (e.getMessage() == null ? e.toString() : e.getMessage());
-               this.statusOk = false;
-            });
-         }
-      }, "token-login");
-      t.setDaemon(true);
-      t.start();
+   private void fail(int attempt, String error) {
+      if (attempt != generation) return;
+      busy = false; message(error, false);
    }
 
-   private void reloginToken(String name) {
-      if (this.microsoftBusy) {
-         this.statusMsg = "a login is already running...";
-         this.statusOk = false;
-         return;
-      }
-
-      String token = OyVey.accountManager.getToken(name);
-      if (token == null || token.isEmpty()) {
-         this.statusMsg = "no saved token for " + name;
-         this.statusOk = false;
-         return;
-      }
-
-      this.microsoftBusy = true;
-      this.statusMsg = "logging into " + name + "...";
-      this.statusOk = true;
-      Thread t = new Thread(() -> {
-         try {
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest req = HttpRequest.newBuilder()
-               .uri(URI.create("https://api.minecraftservices.com/minecraft/profile"))
-               .header("Authorization", "Bearer " + token)
-               .GET()
-               .build();
-            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) {
-               Minecraft.getInstance().execute(() -> {
-                  this.microsoftBusy = false;
-                  this.statusMsg = "token expired - remove and re-add " + name;
-                  this.statusOk = false;
-               });
-               return;
-            }
-
-            JsonObject obj = JsonParser.parseString(resp.body()).getAsJsonObject();
-            String n = obj.get("name").getAsString();
-            String id = obj.get("id").getAsString();
-            UUID uuid = parseUuid(id);
-            Minecraft.getInstance().execute(() -> {
-               boolean ok = OyVey.accountManager.setOnlineSession(n, uuid, token);
-               OyVey.accountManager.saveToken(n, token);
-               OyVey.configManager.save();
-               this.microsoftBusy = false;
-               this.statusMsg = ok ? "signed in as " + n : "session swap failed";
-               this.statusOk = ok;
-            });
-         } catch (Exception e) {
-            Minecraft.getInstance().execute(() -> {
-               this.microsoftBusy = false;
-               this.statusMsg = "login failed: " + (e.getMessage() == null ? e.toString() : e.getMessage());
-               this.statusOk = false;
-            });
-         }
-      }, "token-login");
-      t.setDaemon(true);
-      t.start();
-   }
-
-   private static UUID parseUuid(String id) {
-      String clean = id.replace("-", "");
-      long msb = Long.parseUnsignedLong(clean.substring(0, 16), 16);
-      long lsb = Long.parseUnsignedLong(clean.substring(16, 32), 16);
-      return new UUID(msb, lsb);
-   }
-
-   private static void openUrl(String url) {
-      try {
-         if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Action.BROWSE)) {
-            Desktop.getDesktop().browse(URI.create(url));
-            return;
-         }
-      } catch (Throwable var3) {
-      }
-
-      try {
-         Runtime.getRuntime().exec(new String[]{"rundll32", "url.dll,FileProtocolHandler", url});
-      } catch (Throwable var2) {
-      }
-   }
-
-   private static int argb(int a, int r, int g, int b) {
-      return Mth.clamp(a, 0, 255) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | b & 0xFF;
-   }
-
-   public boolean isPauseScreen() {
-      return false;
-   }
-
-   private static class SimpleField {
-      String text = "";
-      private long blinkBase = System.currentTimeMillis();
-
-      void type(int codepoint) {
-         if (this.text.length() < 512) {
-            this.text = this.text + new String(Character.toChars(codepoint));
-            this.blinkBase = System.currentTimeMillis();
-         }
-      }
-
-      void backspace() {
-         if (!this.text.isEmpty()) {
-            this.text = this.text.substring(0, this.text.length() - 1);
-            this.blinkBase = System.currentTimeMillis();
-         }
-      }
-
-      boolean cursorVisible() {
-         return (System.currentTimeMillis() - this.blinkBase) % 1000L < 530L;
-      }
+   private void message(String value, boolean ok) { status = value; success = ok; }
+   @Override public void onClose() { minecraft.setScreen(parent); }
+   @Override public void removed() {
+      generation++;
+      busy = false;
+      if (token != null) token.setValue("");
    }
 }

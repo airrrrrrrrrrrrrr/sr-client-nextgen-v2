@@ -14,8 +14,15 @@ public final class ScreenProjection {
    private ScreenProjection() { }
 
    public static float[] point(Matrix4fc matrix, double x, double y, double z, int width, int height) {
+      float[] projected = pointUnclipped(matrix, x, y, z, width, height);
+      if (projected == null || projected[0] < 0 || projected[0] > width || projected[1] < 0 || projected[1] > height) return null;
+      return projected;
+   }
+
+   /** Keep off-screen endpoints when measuring a visible sprite's size. */
+   public static float[] pointUnclipped(Matrix4fc matrix, double x, double y, double z, int width, int height) {
       Vector4f clip = matrix.transform(new Vector4f((float)x, (float)y, (float)z, 1));
-      if (!clip.isFinite() || clip.w < NEAR || Math.abs(clip.x) > clip.w || Math.abs(clip.y) > clip.w) {
+      if (!clip.isFinite() || clip.w < NEAR) {
          return null;
       }
       return screen(clip, width, height);

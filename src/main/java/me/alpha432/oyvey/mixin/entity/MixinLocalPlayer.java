@@ -2,8 +2,6 @@ package me.alpha432.oyvey.mixin.entity;
 
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.modules.combat.BedNuker;
-import me.alpha432.oyvey.features.modules.combat.KillAura;
-import me.alpha432.oyvey.features.modules.combat.KillauraNew;
 import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
 import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.features.modules.player.AutoPot;
@@ -22,6 +20,8 @@ public class MixinLocalPlayer {
       if (OyVey.moduleManager == null) return;
       Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
       if (scaffold != null && scaffold.isSprintSuppressed()) cir.setReturnValue(false);
+      KillauraRecode aura = OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
+      if (aura != null && aura.isCriticalSprintSuppressed()) cir.setReturnValue(false);
    }
 
    @Unique
@@ -36,12 +36,8 @@ public class MixinLocalPlayer {
       Scaffold scaffold = this.oyvey$scaffoldHeadPose();
       if (scaffold != null) {
          cir.setReturnValue(scaffold.getSilentHeadPose().interpolatedYaw(partialTick));
-      } else if (KillAura.isRotating) {
-         cir.setReturnValue(KillAura.visualYaw);
       } else if (KillauraRecode.isRotating) {
          cir.setReturnValue(KillauraRecode.visualYaw);
-      } else if (KillauraNew.isRotating) {
-         cir.setReturnValue(KillauraNew.visualYaw);
       } else if (BedNuker.isRotating) {
          cir.setReturnValue(BedNuker.visualYaw);
       } else if (Scaffold.isRotating) {
@@ -58,12 +54,8 @@ public class MixinLocalPlayer {
       Scaffold scaffold = this.oyvey$scaffoldHeadPose();
       if (scaffold != null) {
          cir.setReturnValue(scaffold.getSilentHeadPose().interpolatedPitch(partialTick));
-      } else if (KillAura.isRotating) {
-         cir.setReturnValue(KillAura.visualPitch);
       } else if (KillauraRecode.isRotating) {
          cir.setReturnValue(KillauraRecode.visualPitch);
-      } else if (KillauraNew.isRotating) {
-         cir.setReturnValue(KillauraNew.visualPitch);
       } else if (BedNuker.isRotating) {
          cir.setReturnValue(BedNuker.visualPitch);
       } else if (Scaffold.isRotating) {

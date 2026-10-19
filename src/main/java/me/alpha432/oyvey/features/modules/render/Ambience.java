@@ -28,6 +28,7 @@ public class Ambience extends Module {
 
    @Override
    public void onEnable() {
+      if (mc.level != null) mc.level.environmentAttributes().invalidateTickCache();
       if (mc.options != null) {
          this.savedGamma = (Double)mc.options.gamma().get();
          this.currentGammaI = this.savedGamma;
@@ -85,6 +86,7 @@ public class Ambience extends Module {
 
    @Override
    public void onDisable() {
+      if (mc.level != null) mc.level.environmentAttributes().invalidateTickCache();
       if (this.savedGamma >= 0.0) {
          this.forceSetGamma(this.savedGamma);
       }

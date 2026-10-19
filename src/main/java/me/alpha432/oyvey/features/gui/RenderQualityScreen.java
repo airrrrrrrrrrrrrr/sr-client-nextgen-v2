@@ -40,8 +40,8 @@ public class RenderQualityScreen extends Screen {
       int cy = this.height / 2;
       g.centeredText(this.font, "Select Render Quality", cx, cy - 56, -1);
       g.centeredText(this.font, "Pick the option that matches your PC.", cx, cy - 42, -6710887);
-      this.drawChoice(g, mx, my, true, "High-End", "Smooth, anti-aliased edges");
-      this.drawChoice(g, mx, my, false, "Low-End", "Lightweight, sharp edges");
+      this.drawChoice(g, mx, my, true, "High-End", "Detailed effects and shadows");
+      this.drawChoice(g, mx, my, false, "Low-End", "Lighter effects, smooth corners");
    }
 
    private void drawChoice(GuiGraphicsExtractor g, int mx, int my, boolean isHigh, String title, String sub) {

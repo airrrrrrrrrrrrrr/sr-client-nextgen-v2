@@ -8,10 +8,17 @@ import me.alpha432.oyvey.event.Stage;
 import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
 import me.alpha432.oyvey.event.system.Subscribe;
 import me.alpha432.oyvey.features.modules.Module;
+import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.features.settings.Setting;
+import me.alpha432.oyvey.mixin.render.accessor.ClientInputAccessor;
 import me.alpha432.oyvey.util.MathUtil;
+import me.alpha432.oyvey.util.KeyboardMovement;
+import me.alpha432.oyvey.util.SilentRotationMath;
+import net.minecraft.client.player.ClientInput;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.player.Input;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.ClipContext.Block;
 import net.minecraft.world.level.ClipContext.Fluid;
@@ -19,6 +26,7 @@ import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult.Type;
 
 public class BedNuker extends Module {
@@ -50,23 +58,25 @@ public class BedNuker extends Module {
 
    @Override
    public void onDisable() {
-      if (this.lastTarget != null && mc.gameMode != null) {
-         mc.gameMode.stopDestroyBlock();
-      }
-
-      this.lastTarget = null;
+      this.stopMining();
+      this.restoreRotation();
       this.cachedTarget = null;
       this.cachedRot = null;
       isRotating = false;
-      this.hasSaved = false;
-      OyVey.rotationManager.clearServerRotations();
    }
 
-   @Subscribe
+   @Subscribe(priority = -10)
    public void onUpdate(UpdateWalkingPlayerEvent event) {
-      if (mc.player != null && mc.level != null) {
+      if (mc.player != null && mc.level != null && mc.gameMode != null) {
          if (event.getStage() == Stage.MOTION_PRE) {
-            this.cachedTarget = this.findBest();
+            Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
+            if (mc.screen != null || mc.player.isSpectator() || mc.player.isUsingItem()
+               || scaffold != null && scaffold.ownsRotation() || KillauraRecode.isRotating) {
+               this.stopMining();
+               this.cachedTarget = null;
+               return;
+            }
+            this.cachedTarget = this.validTarget(this.lastTarget) ? this.lastTarget : this.findBest();
             this.cachedRot = null;
             isRotating = false;
             this.hasSaved = false;
@@ -81,44 +91,70 @@ public class BedNuker extends Module {
                this.hasSaved = true;
                OyVey.rotationManager.setPlayerRotations(this.cachedRot[0], this.cachedRot[1]);
                OyVey.rotationManager.setServerRotations(this.cachedRot[0], this.cachedRot[1]);
+               this.mineTarget();
             } else {
-               OyVey.rotationManager.clearServerRotations();
-               if (this.lastTarget != null) {
-                  mc.gameMode.stopDestroyBlock();
-                  this.lastTarget = null;
-               }
-            }
-         } else if (event.getStage() == Stage.POST) {
-            isRotating = false;
-            if (this.hasSaved) {
-               OyVey.rotationManager.setPlayerRotations(this.savedYaw, this.savedPitch);
-               this.hasSaved = false;
+               this.stopMining();
             }
          } else if (event.getStage() == Stage.PRE) {
-            if (this.cachedTarget == null) {
-               if (this.lastTarget != null) {
-                  mc.gameMode.stopDestroyBlock();
-                  this.lastTarget = null;
-               }
-            } else {
-               if (this.cachedRot != null) {
-                  OyVey.rotationManager.setPlayerRotations(this.cachedRot[0], this.cachedRot[1]);
-               }
-
-               Direction face = this.bestFace(this.cachedTarget);
-               if (!this.cachedTarget.equals(this.lastTarget)) {
-                  if (this.lastTarget != null) {
-                     mc.gameMode.stopDestroyBlock();
-                  }
-
-                  mc.gameMode.startDestroyBlock(this.cachedTarget, face);
-                  this.lastTarget = this.cachedTarget;
-               } else {
-                  mc.gameMode.continueDestroyBlock(this.cachedTarget, face);
-               }
-            }
+            if (this.hasSaved && this.cachedRot != null)
+               OyVey.rotationManager.setPlayerRotations(this.cachedRot[0], this.cachedRot[1]);
          }
       }
+   }
+
+   @Subscribe(priority = -1100)
+   public void onWalkingPost(UpdateWalkingPlayerEvent event) {
+      if (event.getStage() == Stage.POST) this.restoreRotation();
+   }
+
+   private void mineTarget() {
+      Direction face = this.bestFace(this.cachedTarget);
+      boolean progress;
+      if (!this.cachedTarget.equals(this.lastTarget)) {
+         this.stopMining();
+         progress = mc.gameMode.startDestroyBlock(this.cachedTarget, face);
+         this.lastTarget = progress ? this.cachedTarget.immutable() : null;
+      } else {
+         progress = mc.gameMode.continueDestroyBlock(this.cachedTarget, face);
+      }
+      // Use vanilla mining progress, cracks, item durability and swing. Do not
+      // spam START/STOP packets or remove an unconfirmed bed from the world.
+      if (progress) mc.player.swing(InteractionHand.MAIN_HAND);
+   }
+
+   private void stopMining() {
+      if (this.lastTarget != null && mc.gameMode != null) mc.gameMode.stopDestroyBlock();
+      this.lastTarget = null;
+   }
+
+   private void restoreRotation() {
+      if (this.hasSaved) {
+         if (mc.player != null) OyVey.rotationManager.setPlayerRotations(this.savedYaw, this.savedPitch);
+         OyVey.rotationManager.clearServerRotations();
+      }
+      this.hasSaved = false;
+      isRotating = false;
+   }
+
+   public boolean isMining() {
+      return this.isEnabled() && mc.player != null && mc.level != null && mc.screen == null
+         && this.lastTarget != null && this.isBed(this.lastTarget);
+   }
+
+   public void applyInput(ClientInput input) {
+      if (!this.isEnabled() || !this.hasSaved || this.cachedRot == null) return;
+      Input keys = input.keyPresses;
+      var movement = SilentRotationMath.correctMovement(keys, visualYaw, this.cachedRot[0]);
+      input.keyPresses = new Input(movement.forward() > 0, movement.forward() < 0,
+         movement.sideways() > 0, movement.sideways() < 0, keys.jump(), keys.shift(),
+         keys.sprint() && movement.forward() > 0);
+      ((ClientInputAccessor)input).oyvey$setMoveVector(KeyboardMovement.vector(movement));
+      if (movement.forward() <= 0) mc.player.setSprinting(false);
+   }
+
+   private boolean validTarget(BlockPos pos) {
+      return pos != null && this.isBed(pos) && this.inRange(pos)
+         && (!this.wallCheck.getValue() || this.hasLineOfSight(pos));
    }
 
    private BlockPos findBest() {
@@ -130,7 +166,7 @@ public class BedNuker extends Module {
          for (int y = -r; y <= r; y++) {
             for (int z = -r; z <= r; z++) {
                BlockPos pos = eye.offset(x, y, z);
-               if (this.isBed(pos) && this.inRange(pos) && (!this.wallCheck.getValue() || this.hasLineOfSight(pos))) {
+               if (this.validTarget(pos)) {
                   candidates.add(pos);
                }
             }
@@ -163,7 +199,8 @@ public class BedNuker extends Module {
    private boolean hasLineOfSight(BlockPos pos) {
       Vec3 eyes = mc.player.getEyePosition();
       Vec3 to = new Vec3(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
-      return mc.level.clip(new ClipContext(eyes, to, Block.COLLIDER, Fluid.NONE, mc.player)).getType() == Type.MISS;
+      BlockHitResult hit = mc.level.clip(new ClipContext(eyes, to, Block.COLLIDER, Fluid.NONE, mc.player));
+      return hit.getType() == Type.MISS || hit.getBlockPos().equals(pos);
    }
 
    private Direction bestFace(BlockPos pos) {
@@ -173,7 +210,7 @@ public class BedNuker extends Module {
 
       for (Direction d : Direction.values()) {
          Vec3 center = Vec3.atCenterOf(pos).add(d.getStepX() * 0.5, d.getStepY() * 0.5, d.getStepZ() * 0.5);
-         Vec3 dir = center.subtract(eyes).normalize();
+         Vec3 dir = eyes.subtract(center).normalize();
          double dot = dir.x * d.getStepX() + dir.y * d.getStepY() + dir.z * d.getStepZ();
          if (dot > bestDot) {
             bestDot = dot;

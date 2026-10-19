@@ -29,6 +29,9 @@ public class EventManager extends Feature {
 
    @Subscribe
    public void onTick(TickEvent event) {
+      if (OyVey.recordedClickManager != null && (nullCheck() || mc.screen != null || !mc.options.keyShift.isDown())) {
+         OyVey.recordedClickManager.pause();
+      }
       if (!nullCheck()) {
          OyVey.moduleManager.onTick();
 

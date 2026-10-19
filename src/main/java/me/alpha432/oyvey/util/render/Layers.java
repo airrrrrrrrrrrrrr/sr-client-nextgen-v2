@@ -21,6 +21,7 @@ import net.minecraft.resources.Identifier;
 public class Layers {
    private static final RenderType GLOBAL_QUADS = RenderType.create("global_fill", RenderSetup.builder(Pipelines.GLOBAL_QUADS_PIPELINE).createRenderSetup());
    private static final RenderType GLOBAL_LINES = RenderType.create("global_lines", RenderSetup.builder(Pipelines.GLOBAL_LINES_PIPELINE).createRenderSetup());
+   private static final RenderType TARGET_GLOW_QUADS = RenderType.create("target_glow_quads", RenderSetup.builder(Pipelines.TARGET_GLOW_QUADS_PIPELINE).createRenderSetup());
    private static final Map<Identifier, RenderType> CHAMS_TYPES = new HashMap<>();
    private static final Map<String, RenderType> CAPE_CUSTOM_TYPES = new ConcurrentHashMap<>();
    private static final Map<RenderType, RenderType> CHAMS_DEPTH_BIAS_TYPES = Collections.synchronizedMap(new WeakHashMap<>());
@@ -36,6 +37,8 @@ public class Layers {
    public static RenderType lines() {
       return GLOBAL_LINES;
    }
+
+   public static RenderType targetGlowQuads() { return TARGET_GLOW_QUADS; }
 
    public static RenderType capeCustomTexture(RenderType originalType, Identifier customTexture) {
       String key = originalType + ":" + customTexture;

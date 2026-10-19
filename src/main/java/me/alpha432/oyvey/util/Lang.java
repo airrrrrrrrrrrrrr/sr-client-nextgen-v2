@@ -54,6 +54,9 @@ public final class Lang {
       add("menu.capes", "Capes", "Capas", "Umhaenge");
       add("menu.options", "Options", "Opciones", "Optionen");
       add("menu.proxies", "Proxies", "Proxies", "Proxys");
+      add("menu.description.multiplayer", "Play on a server", "Juega en un servidor", "Auf einem Server spielen");
+      add("menu.description.singleplayer", "Your saved worlds", "Tus mundos guardados", "Deine gespeicherten Welten");
+      add("menu.setup", "Setup on launch", "Configurar al iniciar", "Setup beim Start");
       add("proxy.save", "Save", "Guardar", "Speichern");
       add("proxy.update", "Update", "Actualizar", "Aktualisieren");
       add("proxy.test", "Test", "Probar", "Testen");
@@ -69,8 +72,8 @@ public final class Lang {
       add("menu.hint.custom", "custom", "personalizado", "angepasst");
       add("menu.hint.cya", "cya", "adios", "tschuess");
       add("menu.hint.route", "route", "ruta", "leiten");
-      add("menu.vanilla", "vanilla menu", "men\u00fa vainilla", "vanilla menue");
-      add("menu.preferences", "preferences", "preferencias", "einstellungen");
+      add("menu.vanilla", "Vanilla menu", "Men\u00fa vainilla", "Vanilla-Menue");
+      add("menu.preferences", "Preferences", "Preferencias", "Einstellungen");
       add("color.BLACK", "Black my loves favorite colour bannabellpepper", "Negro(aka black people", "Schwarz");
       add("color.WHITE", "White", "Blanco", "Weiss");
       add("color.RED", "Red", "Rojo", "Rot");

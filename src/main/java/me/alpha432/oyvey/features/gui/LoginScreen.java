@@ -1,469 +1,266 @@
 package me.alpha432.oyvey.features.gui;
 
-import java.awt.Color;
-import java.util.Random;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.auth.AuthClient;
 import me.alpha432.oyvey.auth.AuthManager;
 import me.alpha432.oyvey.util.render.RenderUtil;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.TitleScreen;
-import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
-import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.network.chat.Component;
-import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
-public class LoginScreen extends Screen {
-   public static boolean authenticated = false;
-   public static boolean offlineMode = false;
-   public static boolean shownThisSession = false;
+/** SR account sign-in using the same controls and typography as the client menus. */
+public class LoginScreen extends ClientMenuScreen {
+   public static boolean authenticated;
+   public static boolean offlineMode;
+   public static boolean shownThisSession;
    public static String loggedInUser = "";
-   private static final int STARS = 90;
-   private final float[] sx = new float[90];
-   private final float[] sy = new float[90];
-   private final float[] svx = new float[90];
-   private final float[] svy = new float[90];
-   private final float[] sa = new float[90];
-   private final LoginScreen.SimpleField userField = new LoginScreen.SimpleField(false);
-   private final LoginScreen.SimpleField passField = new LoginScreen.SimpleField(true);
-   private LoginScreen.SimpleField focused;
-   private boolean registerMode = false;
-   private boolean refreshAttempted = false;
-   private volatile boolean resumeReady = false;
-   private volatile String resumeUser = "";
-   private volatile LoginScreen.State state = LoginScreen.State.IDLE;
-   private volatile String errMsg = "";
-   private long openTime;
 
-   public LoginScreen() {
-      super(Component.literal("login"));
-   }
+   private MenuField userField, passField;
+   private Button primary, switchMode, remember;
+   private boolean registerMode, refreshAttempted, resumeReady, compact;
+   private String resumeUser = "", error = "";
+   private State state = State.IDLE;
+   private int generation, fieldX, fieldWidth, userY, passwordY, rememberY, statusY;
 
-   private static AuthManager am() {
-      return OyVey.authManager;
-   }
+   public LoginScreen() { super("SR Client sign-in"); }
+   private static AuthManager am() { return OyVey.authManager; }
 
-   public void init() {
-      this.openTime = System.currentTimeMillis();
-      this.focused = this.userField;
-      Random rng = new Random();
-
-      for (int i = 0; i < 90; i++) {
-         this.sx[i] = rng.nextFloat() * this.width;
-         this.sy[i] = rng.nextFloat() * this.height;
-         float angle = rng.nextFloat() * 6.2831855F;
-         float spd = 0.04F + rng.nextFloat() * 0.14F;
-         this.svx[i] = (float)Math.cos(angle) * spd;
-         this.svy[i] = (float)Math.sin(angle) * spd;
-         this.sa[i] = 0.25F + rng.nextFloat() * 0.55F;
-      }
-
-      if (!this.refreshAttempted && am() != null && am().hasRememberedSession()) {
-         this.refreshAttempted = true;
-         this.userField.text = am().getUsername() == null ? "" : am().getUsername();
-         this.state = LoginScreen.State.LOADING;
-         String rt = am().getRefreshToken();
-         Thread t = new Thread(() -> {
-            AuthClient.Result r = AuthClient.refresh(rt);
-            Minecraft.getInstance().execute(() -> {
-               if (r.ok() && r.body() != null) {
-                  am().applySession(r.body(), true);
-                  OyVey.configManager.save();
-                  this.resumeReady = true;
-                  this.resumeUser = am().getUsername();
-               } else {
-                  am().logout();
-                  OyVey.configManager.save();
-               }
-
-               this.state = LoginScreen.State.IDLE;
-            });
-         }, "auth-resume");
-         t.setDaemon(true);
-         t.start();
-      }
-   }
-
-   public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
-      float age = (float)(System.currentTimeMillis() - this.openTime) / 1000.0F;
-      float fadeIn = Mth.clamp(age / 0.6F, 0.0F, 1.0F);
-      int accent = OyVey.colorManager.getColorAsInt();
-      int aR = accent >> 16 & 0xFF;
-      int aG = accent >> 8 & 0xFF;
-      int aB = accent & 0xFF;
-      g.fill(0, 0, this.width, this.height, -16316657);
-      float pulse = (float)(Math.sin(age * 0.7) * 0.5 + 0.5);
-      RenderUtil.verticalGradient(g, 0.0F, 0.0F, this.width, this.height * 0.5F, new Color(aR, aG, aB, (int)(12.0F + pulse * 16.0F)), new Color(0, 0, 0, 0));
-
-      for (int i = 0; i < 90; i++) {
-         this.sx[i] = this.sx[i] + this.svx[i];
-         if (this.sx[i] < 0.0F) {
-            this.sx[i] = this.sx[i] + this.width;
-         }
-
-         if (this.sx[i] > this.width) {
-            this.sx[i] = this.sx[i] - this.width;
-         }
-
-         this.sy[i] = this.sy[i] + this.svy[i];
-         if (this.sy[i] < 0.0F) {
-            this.sy[i] = this.sy[i] + this.height;
-         }
-
-         if (this.sy[i] > this.height) {
-            this.sy[i] = this.sy[i] - this.height;
-         }
-
-         g.fill((int)this.sx[i], (int)this.sy[i], (int)this.sx[i] + 1, (int)this.sy[i] + 1, argb((int)(this.sa[i] * fadeIn * 140.0F), aR, aG, aB));
-      }
-
-      String title = "SR CLIENT";
-      float ts = 2.2F;
-      int titleY = (int)(this.height * 0.22F);
-      g.pose().pushMatrix();
-      g.pose().scale(ts, ts);
-      int tx = (int)((this.width / 2.0F - this.font.width(title) * ts / 2.0F) / ts);
-      int ty = (int)((titleY - 6.0F) / ts);
-      g.text(this.font, title, tx + 1, ty + 1, argb((int)(fadeIn * 120.0F), 0, 0, 0), false);
-      g.text(this.font, title, tx, ty, argb((int)(fadeIn * 255.0F), aR, aG, aB), false);
-      g.pose().popMatrix();
-      int cx = this.width / 2 - 120;
-      int cy = (int)(this.height * 0.38F);
-      RenderUtil.dropShadow(g, cx, cy, 240, 178, 8.0F, 14.0F, (int)(fadeIn * 145.0F));
-      RenderUtil.roundedRectGradient(
-         g, cx, cy, 240, 178, 8.0F, argb((int)(fadeIn * 228.0F), 14, 14, 36), argb((int)(fadeIn * 218.0F), 7, 7, 22), true
-      );
-      RenderUtil.roundedOutline(g, cx, cy, 240, 178, 8.0F, 0.9F, argb((int)(fadeIn * 115.0F), aR, aG, aB));
-      RenderUtil.roundedRect(g, cx + 4, cy + 8, 2, 162, 1, argb((int)(fadeIn * 220.0F), aR, aG, aB));
-      int fx = cx + 20;
-      int fy = cy + 32;
-      int fy2 = fy + 18 + 22;
-      int btnY = fy2 + 18 + 16;
-      String heading = this.resumeReady ? "Welcome back" : (this.registerMode ? "Create account" : "Sign in");
-      g.text(this.font, heading, fx, cy + 6, argb((int)(fadeIn * 200.0F), aR, aG, aB), false);
-      this.drawLabel(g, "Username", fx, fy - 9, fadeIn, aR, aG, aB);
-      this.drawField(g, this.userField, "username", fx, fy, 200, 18, fadeIn, aR, aG, aB);
-      this.drawLabel(g, "Password", fx, fy2 - 9, fadeIn, aR, aG, aB);
-      this.drawField(g, this.passField, "password", fx, fy2, 200, 18, fadeIn, aR, aG, aB);
-      boolean btnHov = mx >= fx && mx < fx + 200 && my >= btnY && my < btnY + 20;
-      this.drawButton(g, fx, btnY, 200, 20, btnHov, fadeIn, aR, aG, aB);
-
-      String statusText = switch (this.state) {
-         case LOADING -> spinner(age);
-         case ERROR -> this.errMsg;
-         case OFFLINE -> "can't reach auth server";
-         default -> "";
-      };
-      if (!statusText.isEmpty()) {
-         int sc = switch (this.state) {
-            case ERROR -> argb((int)(fadeIn * 230.0F), 255, 90, 90);
-            case OFFLINE -> argb((int)(fadeIn * 230.0F), 230, 140, 40);
-            default -> argb((int)(fadeIn * 200.0F), 120, 140, 160);
-         };
-         g.centeredText(this.font, statusText, this.width / 2, btnY + 26, sc);
-      }
-
-      String modeLabel = this.resumeReady ? "use a different account" : (this.registerMode ? "have an account? sign in" : "no account? register");
-      int modeY = btnY + 40;
-      boolean modeHov = this.hovText(mx, my, this.width / 2, modeY, modeLabel);
-      g.centeredText(this.font, modeLabel, this.width / 2, modeY, argb((int)(fadeIn * (modeHov ? 230 : 180)), aR, aG, aB));
-      boolean rem = am() != null && am().isRememberMe();
-      String remLabel = "remember me: " + (rem ? "on" : "off");
-      int remY = btnY + 52;
-      boolean remHov = this.hovText(mx, my, this.width / 2, remY, remLabel);
-      g.centeredText(this.font, remLabel, this.width / 2, remY, argb((int)(fadeIn * (remHov ? 220 : 160)), rem ? 90 : 150, rem ? 230 : 160, rem ? 120 : 170));
-      g.text(this.font, "v2.0", 4, this.height - 10, argb((int)(fadeIn * 200.0F), 74, 102, 136), false);
-   }
-
-   private void drawLabel(GuiGraphicsExtractor g, String text, int x, int y, float fadeIn, int aR, int aG, int aB) {
-      g.text(this.font, text, x, y, argb((int)(fadeIn * 160.0F), aR, aG, aB), false);
-   }
-
-   private void drawField(GuiGraphicsExtractor g, LoginScreen.SimpleField f, String ph, int x, int y, int w, int h, float fadeIn, int aR, int aG, int aB) {
-      boolean foc = this.focused == f;
-      RenderUtil.roundedRect(g, x, y, w, h, 2, argb((int)(fadeIn * (foc ? 210 : 170)), foc ? 20 : 12, foc ? 20 : 12, foc ? 40 : 28));
-      RenderUtil.roundedOutline(g, x, y, w, h, 3.0F, foc ? 0.9F : 0.55F, argb((int)(fadeIn * (foc ? 190 : 55)), aR, aG, aB));
-      String shown = f.getDisplay() + (foc && f.cursorVisible() ? "|" : "");
-
-      while (this.font.width(shown) > w - 8 && shown.length() > 0) {
-         shown = shown.substring(1);
-      }
-
-      if (f.text.isEmpty() && !foc) {
-         g.text(this.font, ph, x + 4, y + (h - 8) / 2, argb((int)(fadeIn * 80.0F), 170, 187, 204), false);
-      } else {
-         g.text(this.font, shown, x + 4, y + (h - 8) / 2, argb((int)(fadeIn * 230.0F), 221, 238, 255), false);
-      }
-   }
-
-   private void drawButton(GuiGraphicsExtractor g, int x, int y, int w, int h, boolean hov, float fadeIn, int aR, int aG, int aB) {
-      boolean loading = this.state == LoginScreen.State.LOADING;
-      boolean offline = this.state == LoginScreen.State.OFFLINE;
-      int bg = loading ? argb((int)(fadeIn * 130.0F), 16, 16, 37) : (hov ? argb((int)(fadeIn * 230.0F), 28, 28, 48) : argb((int)(fadeIn * 180.0F), 11, 11, 28));
-      RenderUtil.roundedRect(g, x, y, w, h, 3, bg);
-      RenderUtil.roundedOutline(g, x, y, w, h, 4.0F, 0.85F, argb((int)(fadeIn * (hov ? 220 : 95)), aR, aG, aB));
-      String label;
-      if (loading) {
-         label = "working...";
-      } else if (offline) {
-         label = "Play Offline";
-      } else if (this.resumeReady && this.passField.text.isEmpty()) {
-         label = "Continue as " + this.resumeUser;
-      } else {
-         label = this.registerMode ? "Register" : "Login";
-      }
-
-      int lc = loading
-         ? argb((int)(fadeIn * 150.0F), aR, aG, aB)
-         : (hov ? argb((int)(fadeIn * 255.0F), aR, aG, aB) : argb((int)(fadeIn * 230.0F), 187, 204, 221));
-      g.centeredText(this.font, label, x + w / 2, y + (h - 8) / 2, lc);
-   }
-
-   public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
-      if (click.button() != 0) {
-         return super.mouseClicked(click, doubled);
-      }
-
-      double mx = click.x();
-      double my = click.y();
-      int cx = this.width / 2 - 120;
-      int cy = (int)(this.height * 0.38F);
-      int fx = cx + 20;
-      int fy = cy + 32;
-      int fy2 = fy + 18 + 22;
-      int btnY = fy2 + 18 + 16;
-      if (in(mx, my, fx, fy, 200, 18)) {
-         this.focused = this.userField;
-         return true;
-      }
-
-      if (in(mx, my, fx, fy2, 200, 18)) {
-         this.focused = this.passField;
-         return true;
-      }
-
-      if (in(mx, my, fx, btnY, 200, 20)) {
-         this.primaryAction();
-         return true;
-      }
-
-      String modeLabel = this.resumeReady ? "use a different account" : (this.registerMode ? "have an account? sign in" : "no account? register");
-      if (this.hovText(mx, my, this.width / 2, btnY + 40, modeLabel)) {
-         if (this.resumeReady) {
-            this.resumeReady = false;
-            authenticated = false;
-            this.userField.text = "";
-            this.passField.text = "";
-         } else {
-            this.registerMode = !this.registerMode;
-         }
-
-         this.state = LoginScreen.State.IDLE;
-         this.errMsg = "";
-         return true;
-      } else {
+   @Override protected void init() {
+      String username = userField == null ? "" : userField.getValue();
+      String password = passField == null ? "" : passField.getValue();
+      layout(340, 292);
+      compact = ph < 270;
+      fieldX = px + 20;
+      fieldWidth = pw - 40;
+      userY = py + (compact ? 58 : 92);
+      passwordY = userY + (compact ? 28 : 54);
+      int fieldHeight = compact ? 22 : 26;
+      userField = field("Username", fieldX, userY, fieldWidth, fieldHeight, 64, false);
+      passField = field("Password", fieldX, passwordY, fieldWidth, fieldHeight, 64, true);
+      userField.setValue(username);
+      passField.setValue(password);
+      rememberY = passwordY + fieldHeight + (compact ? 8 : 10);
+      int secondaryWidth = (fieldWidth - 10) / 2;
+      remember = button("Remember me", fieldX, rememberY, secondaryWidth, 20, () -> {
          if (am() != null) {
-            String remLabel = "remember me: " + (am().isRememberMe() ? "on" : "off");
-            if (this.hovText(mx, my, this.width / 2, btnY + 52, remLabel)) {
-               am().setRememberMe(!am().isRememberMe());
-               OyVey.configManager.save();
-               return true;
-            }
+            am().setRememberMe(!am().isRememberMe());
+            OyVey.configManager.save();
+            updateControls();
          }
+      });
+      switchMode = button("Create account", fieldX + secondaryWidth + 10, rememberY,
+         fieldWidth - secondaryWidth - 10, 20, this::switchMode);
+      int primaryY = rememberY + (compact ? 28 : 30);
+      primary = button("Sign in", fieldX, primaryY, fieldWidth, compact ? 24 : 30, this::primaryAction);
+      statusY = primaryY + (compact ? 34 : 42);
+      updateControls();
+      setInitialFocus(userField);
 
-         return super.mouseClicked(click, doubled);
+      if (!refreshAttempted && am() != null && am().hasRememberedSession()) {
+         refreshAttempted = true;
+         userField.setValue(am().getUsername() == null ? "" : am().getUsername());
+         refreshSession(am().getRefreshToken());
       }
    }
 
-   public boolean keyPressed(KeyEvent input) {
-      int key = input.input();
-      long win = this.minecraft.getWindow().handle();
-      boolean ctrl = GLFW.glfwGetKey(win, 341) == 1 || GLFW.glfwGetKey(win, 345) == 1;
-      if (ctrl) {
-         if (key == 86) {
-            String clip = GLFW.glfwGetClipboardString(win);
-            if (clip != null) {
-               this.focused.append(clip.replaceAll("[\\r\\n]", ""));
-            }
+   private void updateControls() {
+      boolean busy = state == State.LOADING;
+      userField.visible = passField.visible = !resumeReady;
+      userField.setEditable(!busy);
+      passField.setEditable(!busy);
+      primary.active = switchMode.active = !busy;
+      remember.active = !busy && am() != null;
+      boolean remembered = am() != null && am().isRememberMe();
+      remember.setMessage(styled(fit("Remember: " + (remembered ? "On" : "Off"), remember.getWidth() - 12), false));
+      String action = busy ? "Please wait…" : state == State.OFFLINE ? "Play offline"
+         : resumeReady ? "Continue as " + resumeUser : registerMode ? "Create account" : "Sign in";
+      primary.setMessage(styled(fit(action, fieldWidth - 20), true));
+      switchMode.setMessage(styled(fit(resumeReady ? "Change account"
+         : registerMode ? "Back to sign in" : "Create account", switchMode.getWidth() - 12), false));
+   }
 
-            return true;
-         }
-
-         if (key == 67) {
-            GLFW.glfwSetClipboardString(win, this.focused.text);
-            return true;
-         }
-
-         if (key == 88) {
-            GLFW.glfwSetClipboardString(win, this.focused.text);
-            this.focused.clear();
-            return true;
-         }
+   @Override public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
+      String heading = resumeReady ? "Welcome back" : registerMode ? "Create your account" : "Sign in to your account";
+      background(g, "", "");
+      // Compact card and centered heading keep the complete form balanced.
+      int titleY = py + (compact ? 12 : 20);
+      String brand = "SR Client";
+      int brandWidth = font.width(styled(brand, true));
+      int versionWidth = font.width(styled("3.0", true));
+      int brandX = px + (pw - brandWidth - 8 - versionWidth) / 2;
+      text(g, brand, brandX, titleY, TEXT, true);
+      text(g, "3.0", brandX + brandWidth + 8, titleY, accent, true);
+      centered(g, heading, py + (compact ? 30 : 40), MUTED);
+      if (resumeReady) {
+         int cardHeight = passwordY + (compact ? 22 : 26) - userY;
+         RenderUtil.roundedRect(g, fieldX, userY, fieldWidth, cardHeight, 5, 0xFF0C1624);
+         RenderUtil.roundedOutline(g, fieldX, userY, fieldWidth, cardHeight, 5, 0.75F, 0x454D6688);
+         int avatarSize = compact ? 30 : 38;
+         int avatarX = fieldX + 12, avatarY = userY + (cardHeight - avatarSize) / 2;
+         RenderUtil.roundedRect(g, avatarX, avatarY, avatarSize, avatarSize, 8, 0xFF243A52);
+         String initial = resumeUser.isEmpty() ? "S" : resumeUser.substring(0, resumeUser.offsetByCodePoints(0, 1)).toUpperCase(java.util.Locale.ROOT);
+         var letter = styled(initial, true);
+         g.text(font, letter, avatarX + (avatarSize - font.width(letter)) / 2, avatarY + (avatarSize - 11) / 2, accent, false);
+         int nameX = avatarX + avatarSize + 12;
+         text(g, fit(resumeUser, fieldX + fieldWidth - nameX - 10), nameX, userY + cardHeight / 2 - 12, TEXT, true);
+         text(g, "Session restored", nameX, userY + cardHeight / 2 + 6, MUTED, false);
+      } else if (!compact) {
+         text(g, "Username", fieldX, userY - 16, MUTED, false);
+         text(g, "Password", fieldX, passwordY - 16, MUTED, false);
       }
-
-      if (key == 258) {
-         this.focused = this.focused == this.userField ? this.passField : this.userField;
-         return true;
-      } else if (key == 259) {
-         this.focused.backspace();
-         return true;
-      } else if (key == 257 || key == 335) {
-         this.primaryAction();
-         return true;
-      } else {
-         return key == 256 ? true : super.keyPressed(input);
+      updateControls();
+      super.extractRenderState(g, mx, my, delta);
+      String message = switch (state) {
+         case LOADING -> refreshAttempted && !registerMode && passField.getValue().isEmpty()
+            ? "Restoring your session…" : registerMode ? "Creating your account…" : "Signing you in…";
+         case ERROR -> error;
+         case OFFLINE -> "The sign-in server is unavailable. You can play offline.";
+         case IDLE -> resumeReady ? "Your saved account is ready to use." : "";
+      };
+      int color = state == State.ERROR ? 0xFFFFAAA6 : state == State.OFFLINE ? 0xFFE7CE89 : MUTED;
+      if (!message.isEmpty()) {
+         int availableLines = Math.max(1, Math.min(2, (py + ph - statusY - 8) / 13));
+         if (availableLines == 1) centered(g, fit(message, fieldWidth), statusY, color);
+         else {
+            var lines = font.split(styled(message, false), fieldWidth);
+            for (int i = 0; i < Math.min(availableLines, lines.size()); i++)
+               g.text(font, lines.get(i), px + (pw - font.width(lines.get(i))) / 2, statusY + i * 13, color, false);
+         }
       }
    }
 
-   public boolean charTyped(CharacterEvent input) {
-      this.focused.type(input.codepoint());
-      return true;
+   private void centered(GuiGraphicsExtractor g, String value, int y, int color) {
+      var label = styled(value, false);
+      g.text(font, label, px + (pw - font.width(label)) / 2, y, color, false);
+   }
+
+   @Override public boolean keyPressed(KeyEvent event) {
+      if ((event.input() == GLFW.GLFW_KEY_ENTER || event.input() == GLFW.GLFW_KEY_KP_ENTER)
+         && (userField.isFocused() || passField.isFocused() || getFocused() == null)) {
+         primaryAction();
+         return true;
+      }
+      return super.keyPressed(event);
+   }
+
+   private void switchMode() {
+      if (state == State.LOADING) return;
+      if (resumeReady) {
+         resumeReady = false;
+         authenticated = false;
+         resumeUser = "";
+         userField.setValue("");
+      } else registerMode = !registerMode;
+      passField.setValue("");
+      error = "";
+      state = State.IDLE;
+      updateControls();
+      setFocused(userField);
    }
 
    private void primaryAction() {
-      if (this.state == LoginScreen.State.OFFLINE) {
+      if (state == State.LOADING) return;
+      if (state == State.OFFLINE) {
          offlineMode = true;
-         this.proceed();
-      } else if (this.resumeReady && this.passField.text.isEmpty()) {
+         proceed();
+      } else if (resumeReady) {
          authenticated = true;
-         loggedInUser = this.resumeUser;
-         this.proceed();
-      } else {
-         this.submit();
-      }
+         offlineMode = false;
+         loggedInUser = resumeUser;
+         proceed();
+      } else submit();
+   }
+
+   private void refreshSession(String refreshToken) {
+      state = State.LOADING;
+      updateControls();
+      int attempt = ++generation;
+      Thread worker = new Thread(() -> {
+         AuthClient.Result result = AuthClient.refresh(refreshToken);
+         minecraft.execute(() -> {
+            if (attempt != generation) return;
+            if (result.ok() && result.body() != null && result.body().has("access_token")) {
+               am().applySession(result.body(), true);
+               OyVey.configManager.save();
+               resumeUser = am().getUsername() == null ? userField.getValue() : am().getUsername();
+               resumeReady = true;
+               state = State.IDLE;
+               updateControls();
+               setFocused(primary);
+            } else {
+               am().logout();
+               OyVey.configManager.save();
+               state = result.status() == 0 ? State.OFFLINE : State.ERROR;
+               error = "Your saved session expired. Please sign in again.";
+               updateControls();
+               setFocused(passField);
+            }
+         });
+      }, "auth-resume");
+      worker.setDaemon(true);
+      worker.start();
    }
 
    private void submit() {
-      if (this.state != LoginScreen.State.LOADING) {
-         String user = this.userField.text.trim();
-         String pass = this.passField.text;
-         if (!user.isEmpty() && !pass.isEmpty()) {
-            this.state = LoginScreen.State.LOADING;
-            this.errMsg = "";
-            boolean remember = am() == null || am().isRememberMe();
-            boolean reg = this.registerMode;
-            Thread t = new Thread(() -> {
-               AuthClient.Result r;
-               if (reg) {
-                  r = AuthClient.register(user, pass);
-                  if (r.ok()) {
-                     r = AuthClient.login(user, pass);
-                  }
-               } else {
-                  r = AuthClient.login(user, pass);
-               }
-
-               AuthClient.Result res = r;
-               Minecraft.getInstance().execute(() -> this.handleResult(res, user, remember));
-            }, "auth-submit");
-            t.setDaemon(true);
-            t.start();
-         } else {
-            this.errMsg = "fill in both fields";
-            this.state = LoginScreen.State.ERROR;
-         }
+      String user = userField.getValue().trim(), password = passField.getValue();
+      if (user.isEmpty() || password.isEmpty()) {
+         state = State.ERROR;
+         error = "Enter your username and password.";
+         updateControls();
+         setFocused(user.isEmpty() ? userField : passField);
+         return;
       }
+      state = State.LOADING;
+      error = "";
+      updateControls();
+      boolean createAccount = registerMode;
+      boolean rememberAccount = am() == null || am().isRememberMe();
+      int attempt = ++generation;
+      Thread worker = new Thread(() -> {
+         AuthClient.Result result;
+         if (createAccount) {
+            result = AuthClient.register(user, password);
+            if (result.ok()) result = AuthClient.login(user, password);
+         } else result = AuthClient.login(user, password);
+         AuthClient.Result completed = result;
+         minecraft.execute(() -> {
+            if (attempt == generation) handleResult(completed, user, rememberAccount);
+         });
+      }, "auth-submit");
+      worker.setDaemon(true);
+      worker.start();
    }
 
-   private void handleResult(AuthClient.Result res, String user, boolean remember) {
-      if (res.status() == 0) {
-         this.state = LoginScreen.State.OFFLINE;
-      } else if (res.ok() && res.body() != null && res.body().has("access_token")) {
+   private void handleResult(AuthClient.Result result, String user, boolean rememberAccount) {
+      if (result.status() == 0) state = State.OFFLINE;
+      else if (result.ok() && result.body() != null && result.body().has("access_token")) {
          if (am() != null) {
-            am().applySession(res.body(), remember);
+            am().applySession(result.body(), rememberAccount);
             OyVey.configManager.save();
          }
-
          authenticated = true;
+         offlineMode = false;
          loggedInUser = user;
-         this.proceed();
+         proceed();
+         return;
       } else {
-         this.state = LoginScreen.State.ERROR;
-         this.errMsg = res.error() != null ? res.error() : "authentication failed";
+         state = State.ERROR;
+         error = result.error() == null ? "Sign-in failed. Please try again." : result.error();
       }
+      updateControls();
    }
 
    private void proceed() {
-      this.minecraft.setScreen(new TitleScreen());
+      passField.setValue("");
+      minecraft.setScreen(new TitleScreen());
    }
 
-   private static boolean in(double mx, double my, int x, int y, int w, int h) {
-      return mx >= x && mx < x + w && my >= y && my < y + h;
+   @Override public void removed() {
+      generation++;
+      if (passField != null) passField.setValue("");
    }
-
-   private boolean hovText(double mx, double my, int centerX, int y, String text) {
-      int w = this.font.width(text);
-      return mx >= centerX - w / 2 - 2 && mx < centerX + w / 2 + 2 && my >= y - 1 && my < y + 9;
-   }
-
-   private static String spinner(float age) {
-      String[] f = new String[]{"working.  ", "working.. ", "working..."};
-      return f[(int)(age * 3.0F) % f.length];
-   }
-
-   private static int argb(int a, int r, int g, int b) {
-      return Mth.clamp(a, 0, 255) << 24 | (r & 0xFF) << 16 | (g & 0xFF) << 8 | b & 0xFF;
-   }
-
-   public boolean isPauseScreen() {
-      return false;
-   }
-
-   private static class SimpleField {
-      String text = "";
-      final boolean password;
-      private long blinkBase = System.currentTimeMillis();
-
-      SimpleField(boolean password) {
-         this.password = password;
-      }
-
-      void type(int codepoint) {
-         if (this.text.length() < 64) {
-            this.text = this.text + new String(Character.toChars(codepoint));
-            this.blinkBase = System.currentTimeMillis();
-         }
-      }
-
-      void append(String s) {
-         if (s != null && !s.isEmpty()) {
-            int room = 64 - this.text.length();
-            if (room > 0) {
-               this.text = this.text + (s.length() > room ? s.substring(0, room) : s);
-               this.blinkBase = System.currentTimeMillis();
-            }
-         }
-      }
-
-      void backspace() {
-         if (!this.text.isEmpty()) {
-            this.text = this.text.substring(0, this.text.length() - 1);
-            this.blinkBase = System.currentTimeMillis();
-         }
-      }
-
-      void clear() {
-         this.text = "";
-         this.blinkBase = System.currentTimeMillis();
-      }
-
-      String getDisplay() {
-         return this.password ? "\u2022".repeat(this.text.length()) : this.text;
-      }
-
-      boolean cursorVisible() {
-         return (System.currentTimeMillis() - this.blinkBase) % 1000L < 530L;
-      }
-   }
-
-   private enum State {
-      IDLE,
-      LOADING,
-      ERROR,
-      OFFLINE;
-   }
+   @Override public boolean shouldCloseOnEsc() { return false; }
+   private enum State { IDLE, LOADING, ERROR, OFFLINE }
 }

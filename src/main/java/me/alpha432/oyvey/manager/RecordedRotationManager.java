@@ -6,33 +6,44 @@ import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
 import me.alpha432.oyvey.util.traits.Jsonable;
-import me.alpha432.oyvey.util.traits.Util;
+import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 
-public class RecordedRotationManager implements Jsonable, Util {
-   private static final int MIN_SAMPLES = 5;
-   private static final int MAX_SAMPLES = 20000;
-   private static final float MIN_TOTAL_MOVEMENT = 2.0F;
-   private static final float MIN_SAMPLE_MOVEMENT_SQUARED = 1.0E-8F;
+public class RecordedRotationManager implements Jsonable {
+   private static final int MAX_SAMPLES = 200000;
    private final List<RecordedRotationManager.RotationSample> pattern = new ArrayList<>();
    private final List<RecordedRotationManager.RotationSample> pending = new ArrayList<>();
    private boolean recording;
+   private boolean armed;
    private Entity recordingTarget;
+   private float minimumSpeed, maximumSpeed;
+
+   public synchronized void armRecording(Entity target) {
+      this.pending.clear();
+      this.recordingTarget = target;
+      this.recording = false;
+      this.armed = true;
+   }
+
+   public synchronized boolean isArmed() { return this.armed; }
+
+   public synchronized void cancelRecording() {
+      this.pending.clear();
+      this.recording = this.armed = false;
+      this.recordingTarget = null;
+   }
 
    public synchronized void startRecording() {
       this.startRecording(null);
    }
 
    public synchronized void startRecording(Entity target) {
-      if (mc.player == null) {
-         return;
-      }
-
       this.pending.clear();
       this.recordingTarget = target;
       this.recording = true;
+      this.armed = false;
    }
 
    public synchronized int stopRecording() {
@@ -51,15 +62,15 @@ public class RecordedRotationManager implements Jsonable, Util {
          return;
       }
 
+      if (!Float.isFinite(deltaYaw) || !Float.isFinite(deltaPitch)) return;
       deltaYaw = Mth.wrapDegrees(deltaYaw);
       deltaPitch = Mth.clamp(deltaPitch, -180.0F, 180.0F);
-      float movementSquared = deltaYaw * deltaYaw + deltaPitch * deltaPitch;
-      if (Float.isFinite(deltaYaw) && Float.isFinite(deltaPitch) && movementSquared > MIN_SAMPLE_MOVEMENT_SQUARED) {
          float yawError = 0.0F;
          float pitchError = 0.0F;
-         if (this.recordingTarget != null && !this.recordingTarget.isRemoved() && mc.player != null) {
+         Minecraft mc = this.recordingTarget == null ? null : Minecraft.getInstance();
+         if (this.recordingTarget != null && !this.recordingTarget.isRemoved() && mc != null && mc.player != null) {
             Vec3 eyes = mc.player.getEyePosition();
-            Vec3 target = this.recordingTarget.getBoundingBox().getCenter();
+            Vec3 target = me.alpha432.oyvey.util.CombatAim.headCenter(this.recordingTarget.getBoundingBox(), this.recordingTarget.getEyeY());
             Vec3 delta = target.subtract(eyes);
             double horizontal = Math.sqrt(delta.x * delta.x + delta.z * delta.z);
             float targetYaw = (float)Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90.0F;
@@ -69,16 +80,10 @@ public class RecordedRotationManager implements Jsonable, Util {
          }
 
          this.pending.add(new RecordedRotationManager.RotationSample(deltaYaw, deltaPitch, yawError, pitchError));
-      }
    }
 
    private int commitPending() {
-      float totalMovement = 0.0F;
-      for (RecordedRotationManager.RotationSample sample : this.pending) {
-         totalMovement += (float)Math.hypot(sample.yawDelta(), sample.pitchDelta());
-      }
-
-      if (this.pending.size() < MIN_SAMPLES || totalMovement < MIN_TOTAL_MOVEMENT) {
+      if (this.pending.isEmpty()) {
          this.pending.clear();
          return -1;
       }
@@ -86,6 +91,7 @@ public class RecordedRotationManager implements Jsonable, Util {
       this.pattern.clear();
       this.pattern.addAll(this.pending);
       this.pending.clear();
+      this.updateSpeedBounds();
       return this.pattern.size();
    }
 
@@ -102,22 +108,25 @@ public class RecordedRotationManager implements Jsonable, Util {
    }
 
    public synchronized float getMinimumSpeed() {
-      float minimum = Float.MAX_VALUE;
-      for (RecordedRotationManager.RotationSample sample : this.pattern) {
-         minimum = Math.min(minimum, (float)Math.hypot(sample.yawDelta(), sample.pitchDelta()));
-      }
-
-      return minimum == Float.MAX_VALUE ? 0.0F : minimum;
+      return this.minimumSpeed;
    }
 
    public synchronized float getMaximumSpeed() {
-      float maximum = 0.0F;
-      for (RecordedRotationManager.RotationSample sample : this.pattern) {
-         maximum = Math.max(maximum, (float)Math.hypot(sample.yawDelta(), sample.pitchDelta()));
-      }
-
-      return maximum;
+      return this.maximumSpeed;
    }
+
+   private void updateSpeedBounds() {
+      this.minimumSpeed = Float.POSITIVE_INFINITY;
+      this.maximumSpeed = 0;
+      for (RotationSample sample : this.pattern) {
+         float speed = (float)Math.hypot(sample.yawDelta(), sample.pitchDelta());
+         this.minimumSpeed = Math.min(this.minimumSpeed, speed);
+         this.maximumSpeed = Math.max(this.maximumSpeed, speed);
+      }
+      if (this.pattern.isEmpty()) this.minimumSpeed = 0;
+   }
+
+   public synchronized boolean isFull() { return this.pending.size() >= MAX_SAMPLES; }
 
    public synchronized int getPendingSize() {
       return this.pending.size();
@@ -138,19 +147,27 @@ public class RecordedRotationManager implements Jsonable, Util {
    }
 
    public synchronized boolean isRecordingTarget(Entity entity) {
-      return this.recording && entity != null && entity == this.recordingTarget;
+      return entity != null && entity == this.recordingTarget;
    }
 
    public synchronized void clearPattern() {
       this.pattern.clear();
       this.pending.clear();
       this.recording = false;
+      this.armed = false;
       this.recordingTarget = null;
+      this.minimumSpeed = this.maximumSpeed = 0;
    }
 
    @Override
    public synchronized JsonElement toJson() {
       JsonObject root = new JsonObject();
+      root.addProperty("formatVersion", 2);
+      root.addProperty("sampling", "mouse-turn-including-idle");
+      root.addProperty("sampleCount", this.pattern.size());
+      JsonArray columns = new JsonArray();
+      for (String name : new String[]{"yawDelta", "pitchDelta", "yawError", "pitchError"}) columns.add(name);
+      root.add("columns", columns);
       JsonArray samples = new JsonArray();
       for (RecordedRotationManager.RotationSample sample : this.pattern) {
          JsonArray entry = new JsonArray();
@@ -168,6 +185,11 @@ public class RecordedRotationManager implements Jsonable, Util {
    @Override
    public synchronized void fromJson(JsonElement element) {
       this.pattern.clear();
+      this.pending.clear();
+      this.recording = false;
+      this.armed = false;
+      this.recordingTarget = null;
+      this.minimumSpeed = this.maximumSpeed = 0;
       if (element == null || !element.isJsonObject()) {
          return;
       }
@@ -178,15 +200,15 @@ public class RecordedRotationManager implements Jsonable, Util {
       }
 
       for (JsonElement sampleElement : samplesElement.getAsJsonArray()) {
-         if (this.pattern.size() >= MAX_SAMPLES || !sampleElement.isJsonArray()) {
-            break;
-         }
+         if (this.pattern.size() >= MAX_SAMPLES) break;
+         if (!sampleElement.isJsonArray()) continue;
 
          JsonArray entry = sampleElement.getAsJsonArray();
          if (entry.size() < 2) {
             continue;
          }
 
+         try {
          float yawDelta = entry.get(0).getAsFloat();
          float pitchDelta = entry.get(1).getAsFloat();
          float yawError = entry.size() >= 3 ? entry.get(2).getAsFloat() : 0.0F;
@@ -194,8 +216,7 @@ public class RecordedRotationManager implements Jsonable, Util {
          if (Float.isFinite(yawDelta)
             && Float.isFinite(pitchDelta)
             && Float.isFinite(yawError)
-            && Float.isFinite(pitchError)
-            && yawDelta * yawDelta + pitchDelta * pitchDelta > MIN_SAMPLE_MOVEMENT_SQUARED) {
+            && Float.isFinite(pitchError)) {
             this.pattern.add(
                new RecordedRotationManager.RotationSample(
                   Mth.wrapDegrees(yawDelta),
@@ -205,7 +226,11 @@ public class RecordedRotationManager implements Jsonable, Util {
                )
             );
          }
+         } catch (RuntimeException invalidSample) {
+            // A malformed entry must not discard later valid samples.
+         }
       }
+      this.updateSpeedBounds();
    }
 
    @Override

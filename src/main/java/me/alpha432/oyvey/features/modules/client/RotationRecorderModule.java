@@ -1,21 +1,27 @@
 package me.alpha432.oyvey.features.modules.client;
 
+import com.mojang.authlib.GameProfile;
+import java.util.UUID;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.commands.Command;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.settings.Bind;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.RemotePlayer;
+import net.minecraft.client.resources.DefaultPlayerSkin;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.decoration.ArmorStand;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.entity.player.PlayerSkin;
 import org.lwjgl.glfw.GLFW;
 
 public class RotationRecorderModule extends Module {
    private static final int DUMMY_ENTITY_ID = -4321432;
-   private ArmorStand practiceDummy;
+   private static final UUID STEVE_ID = new UUID(0, 15);
+   private RemotePlayer practiceDummy;
+   private ClientLevel dummyLevel;
 
    public RotationRecorderModule() {
-      super("RotationRecorder", "Records every mouse rotation and jitter for KillauraRecode Recorded mode.", Module.Category.CLIENT);
+      super("RotationRecorder", "Sneak to start recording all mouse samples against a client-only Steve; toggle off to save JSON.", Module.Category.CLIENT);
       this.bind.setValueNoEvent(new Bind(GLFW.GLFW_KEY_H));
    }
 
@@ -28,9 +34,9 @@ public class RotationRecorderModule extends Module {
       }
 
       this.spawnPracticeDummy();
-      OyVey.recordedRotationManager.startRecording(this.practiceDummy);
+      OyVey.recordedRotationManager.armRecording(this.practiceDummy);
       Command.sendMessage(
-         "{yellow} Client-only practice dummy spawned. Aim at and attack it naturally, then press {white}H{yellow} again to save.",
+         "{yellow} Steve spawned. {white}Sneak{yellow} to start recording, then aim naturally. Press {white}H{yellow} again to save JSON.",
          "rot-record"
       );
    }
@@ -38,6 +44,7 @@ public class RotationRecorderModule extends Module {
    @Override
    public void onDisable() {
       if (!OyVey.recordedRotationManager.isRecording()) {
+         OyVey.recordedRotationManager.cancelRecording();
          this.removePracticeDummy();
          return;
       }
@@ -46,7 +53,7 @@ public class RotationRecorderModule extends Module {
       this.removePracticeDummy();
       if (count < 0) {
          Command.sendMessage(
-            "{red} Recording had too little movement. Your previous pattern was kept; press H and record a longer mouse movement.",
+            "{yellow} No samples were captured. Your previous JSON recording was kept.",
             "rot-record"
          );
          return;
@@ -54,7 +61,7 @@ public class RotationRecorderModule extends Module {
 
       OyVey.configManager.save();
       Command.sendMessage(
-         "{green} Saved {white}%s{green} non-zero rotation and jitter samples for KillauraRecode.",
+         "{green} Saved {white}%s{green} samples, including zeros, to {white}oyvey/recorded-rotations.json{green}.",
          "rot-record",
          count
       );
@@ -62,14 +69,27 @@ public class RotationRecorderModule extends Module {
 
    @Override
    public void onTick() {
-      if (!OyVey.recordedRotationManager.isRecording()) {
+      if (mc.player == null || mc.level != this.dummyLevel || this.practiceDummy == null || this.practiceDummy.isRemoved()) {
          this.disable();
+         return;
       }
+      if (OyVey.recordedRotationManager.isArmed()) {
+         if (mc.screen == null && mc.options.keyShift.isDown()) {
+            OyVey.recordedRotationManager.startRecording(this.practiceDummy);
+            Command.sendMessage("{green} Recording started. Zero movement is recorded too. Press {white}H{green} to save.", "rot-record");
+         }
+      } else if (!OyVey.recordedRotationManager.isRecording() || OyVey.recordedRotationManager.isFull()) this.disable();
    }
 
    @Override
    public String getDisplayInfo() {
-      return OyVey.recordedRotationManager.isRecording() ? Integer.toString(OyVey.recordedRotationManager.getPendingSize()) : null;
+      return OyVey.recordedRotationManager.isArmed() ? "Sneak to start"
+         : OyVey.recordedRotationManager.isRecording() ? Integer.toString(OyVey.recordedRotationManager.getPendingSize()) : null;
+   }
+
+   @Override public void onUnload() {
+      if (this.isEnabled()) this.disable();
+      else this.removePracticeDummy();
    }
 
    private void spawnPracticeDummy() {
@@ -78,12 +98,18 @@ public class RotationRecorderModule extends Module {
       double radians = Math.toRadians(spawnYaw);
       double x = mc.player.getX() - Math.sin(radians) * 3.0;
       double z = mc.player.getZ() + Math.cos(radians) * 3.0;
-      this.practiceDummy = new ArmorStand(mc.level, x, mc.player.getY(), z);
+      this.dummyLevel = mc.level;
+      this.practiceDummy = new RemotePlayer(mc.level, new GameProfile(STEVE_ID, "Steve")) {
+         @Override public PlayerSkin getSkin() { return DefaultPlayerSkin.get(STEVE_ID); }
+      };
+      this.practiceDummy.setPos(x, mc.player.getY(), z);
       this.practiceDummy.setId(DUMMY_ENTITY_ID);
       this.practiceDummy.setYRot(spawnYaw + 180.0F);
+      this.practiceDummy.yHeadRot = this.practiceDummy.yBodyRot = spawnYaw + 180.0F;
+      this.practiceDummy.setOldPosAndRot();
       this.practiceDummy.setNoGravity(true);
       this.practiceDummy.setInvulnerable(true);
-      this.practiceDummy.setCustomName(Component.literal("Rotation Recorder Dummy"));
+      this.practiceDummy.setCustomName(Component.literal("Steve"));
       this.practiceDummy.setCustomNameVisible(true);
       mc.level.addEntity(this.practiceDummy);
    }
@@ -93,12 +119,13 @@ public class RotationRecorderModule extends Module {
          return;
       }
 
-      if (mc.level != null && mc.level.getEntity(this.practiceDummy.getId()) == this.practiceDummy) {
-         mc.level.removeEntity(this.practiceDummy.getId(), Entity.RemovalReason.DISCARDED);
+      if (this.dummyLevel != null && this.dummyLevel.getEntity(this.practiceDummy.getId()) == this.practiceDummy) {
+         this.dummyLevel.removeEntity(this.practiceDummy.getId(), Entity.RemovalReason.DISCARDED);
       } else {
          this.practiceDummy.discard();
       }
 
       this.practiceDummy = null;
+      this.dummyLevel = null;
    }
 }

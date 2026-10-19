@@ -20,6 +20,7 @@ import me.alpha432.oyvey.features.commands.impl.FriendCommand;
 import me.alpha432.oyvey.features.commands.impl.HelpCommand;
 import me.alpha432.oyvey.features.commands.impl.PrefixCommand;
 import me.alpha432.oyvey.features.commands.impl.RotCommand;
+import me.alpha432.oyvey.features.commands.impl.ClickCommand;
 import me.alpha432.oyvey.features.commands.impl.ToggleCommand;
 import me.alpha432.oyvey.features.commands.impl.VclipCommand;
 import me.alpha432.oyvey.util.traits.Jsonable;
@@ -47,6 +48,7 @@ public class CommandManager extends Feature implements Jsonable {
       this.register(new HelpCommand());
       this.register(new PrefixCommand());
       this.register(new RotCommand());
+      this.register(new ClickCommand());
       this.register(new ToggleCommand());
       this.register(new VclipCommand());
       LOGGER.info("Registered {} commands", this.commandList.size());

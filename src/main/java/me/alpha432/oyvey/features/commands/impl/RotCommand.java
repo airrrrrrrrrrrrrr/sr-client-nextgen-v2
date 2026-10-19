@@ -51,24 +51,24 @@ public class RotCommand extends Command {
 
    private int stopRecording() {
       RecordedRotationManager rotations = OyVey.recordedRotationManager;
-      if (!rotations.isRecording()) {
-         return this.fail("No rotation recording is active. Type .rot record to start one.");
-      }
-
       RotationRecorderModule recorder = OyVey.moduleManager.getModuleByClass(RotationRecorderModule.class);
       if (recorder != null && recorder.isEnabled()) {
          recorder.disable();
          return -1;
       }
 
+      if (!rotations.isRecording()) return this.fail("No recording is active. Type .rot record, then sneak to start.");
+
       int count = rotations.stopRecording();
+      if (count >= 0) OyVey.configManager.save();
       return count < 0
-         ? this.fail("Recording was too short or had too little movement. Your previous pattern was kept.")
-         : this.success("Saved {white}%s{reset} non-zero rotation samples.", count);
+         ? this.fail("No samples were captured. Your previous pattern was kept.")
+         : this.success("Saved {white}%s{reset} samples, including zeros, to oyvey/recorded-rotations.json.", count);
    }
 
    private int showStatus() {
       RecordedRotationManager rotations = OyVey.recordedRotationManager;
+      if (rotations.isArmed()) return this.success("Recorder armed. {white}Sneak{reset} to start, then press H again to save JSON.");
       if (rotations.isRecording()) {
          return this.success("Recording rotations now ({white}%s{reset} samples captured).", rotations.getPendingSize());
       }

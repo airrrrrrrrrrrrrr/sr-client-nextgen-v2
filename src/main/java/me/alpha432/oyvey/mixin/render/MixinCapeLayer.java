@@ -1,10 +1,8 @@
 package me.alpha432.oyvey.mixin.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import me.alpha432.oyvey.OyVey;
-import me.alpha432.oyvey.features.cape.CapeEntry;
 import me.alpha432.oyvey.features.cape.CapeStateModifier;
-import me.alpha432.oyvey.features.cape.CapeTextureLoader;
+import me.alpha432.oyvey.features.cape.SrCapeTexture;
 import me.alpha432.oyvey.features.modules.render.Chams;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.SubmitNodeCollector;
@@ -26,14 +24,11 @@ public class MixinCapeLayer {
       Chams.renderingClassicCape = true;
       Chams.renderingOwnCape = false;
       Minecraft mc = Minecraft.getInstance();
-      if (mc.player != null && state.id == mc.player.getId() && OyVey.capeManager != null && OyVey.capeManager.hasActiveCape()) {
-         CapeEntry active = OyVey.capeManager.getActiveCape();
-         if (active != null) {
-            Identifier tex = CapeTextureLoader.get(active.source());
-            if (tex != null) {
-               CapeStateModifier.tryApply(state, tex);
-               Chams.renderingOwnCape = true;
-            }
+      if (mc.player != null && state.id == mc.player.getId()) {
+         Identifier tex = SrCapeTexture.get();
+         if (tex != null) {
+            CapeStateModifier.tryApply(state, tex);
+            Chams.renderingOwnCape = true;
          }
       }
    }

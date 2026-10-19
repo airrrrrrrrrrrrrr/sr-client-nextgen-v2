@@ -10,6 +10,7 @@ import io.netty.channel.ChannelInitializer;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.event.impl.network.PacketEvent;
 import me.alpha432.oyvey.features.modules.misc.ClientSpoof;
+import me.alpha432.oyvey.features.modules.combat.BacktrackModule;
 import me.alpha432.oyvey.features.modules.player.FakeLagModule;
 import me.alpha432.oyvey.proxy.ProxyEntry;
 import me.alpha432.oyvey.util.traits.Util;
@@ -30,6 +31,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Connection.class)
 public class MixinConnection {
+   @Shadow private void sendPacket(Packet<?> packet, ChannelFutureListener callbacks, boolean flush) { throw new AssertionError(); }
    @Shadow
    private Channel channel;
    @Shadow
@@ -89,6 +91,15 @@ public class MixinConnection {
    private void sendPacket(Packet<?> packet, ChannelFutureListener callbacks, boolean flush, CallbackInfo ci) {
       if (this.receiving == PacketFlow.CLIENTBOUND) {
          if (Minecraft.getInstance().player == null) {
+            return;
+         }
+
+         BacktrackModule backtrack = BacktrackModule.INSTANCE;
+         if (backtrack != null && this.channel != null
+            && backtrack.deferLatencyReply((Connection)(Object)this, packet,
+               () -> this.sendPacket(packet, callbacks, flush),
+               (task, delay) -> this.channel.eventLoop().schedule(task, delay, java.util.concurrent.TimeUnit.MILLISECONDS))) {
+            ci.cancel();
             return;
          }
 

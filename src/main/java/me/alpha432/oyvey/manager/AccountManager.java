@@ -7,7 +7,6 @@ import com.mojang.authlib.yggdrasil.YggdrasilAuthenticationService;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -67,6 +66,8 @@ public class AccountManager implements Jsonable {
    }
 
    public void saveMicrosoftSession(String username, String sessionJson) {
+      this.tokenAccounts.remove(username);
+      this.accountTokens.remove(username);
       this.microsoftAccounts.add(username);
       if (sessionJson != null) {
          this.microsoftSessions.put(username, sessionJson);
@@ -82,6 +83,8 @@ public class AccountManager implements Jsonable {
    }
 
    public void saveToken(String username, String token) {
+      this.microsoftAccounts.remove(username);
+      this.microsoftSessions.remove(username);
       this.tokenAccounts.add(username);
       if (token != null && !token.isEmpty()) {
          this.accountTokens.put(username, token);
@@ -110,7 +113,6 @@ public class AccountManager implements Jsonable {
             this.accounts.add(name);
          }
 
-         this.microsoftAccounts.add(name);
          return true;
       } catch (Exception var10) {
       }
@@ -124,13 +126,12 @@ public class AccountManager implements Jsonable {
          User newUser = new User(username, uuid, "", Optional.empty(), Optional.empty());
          Minecraft mc = Minecraft.getInstance();
 
-         for (Field f : Minecraft.class.getDeclaredFields()) {
-            if (f.getType() == User.class) {
-               f.setAccessible(true);
-               f.set(mc, newUser);
-               return true;
-            }
-         }
+         MinecraftAccessor accessor = (MinecraftAccessor)mc;
+         accessor.oyvey$setUser(newUser);
+         accessor.oyvey$setUserApiService(UserApiService.OFFLINE);
+         accessor.oyvey$setProfileKeyPairManager(ProfileKeyPairManager.EMPTY_KEY_MANAGER);
+         accessor.oyvey$setProfileFuture(CompletableFuture.completedFuture(new ProfileResult(new GameProfile(uuid, username))));
+         return true;
       } catch (Exception var9) {
       }
 
@@ -152,9 +153,8 @@ public class AccountManager implements Jsonable {
       JsonArray tk = new JsonArray();
       this.tokenAccounts.forEach(tk::add);
       obj.add("tokenAccounts", tk);
-      JsonObject tokens = new JsonObject();
-      this.accountTokens.forEach(tokens::addProperty);
-      obj.add("tokens", tokens);
+      // Direct bearer tokens stay in memory. A saved row asks for a fresh token
+      // after restart; legacy plaintext tokens are removed on the next save.
       return obj;
    }
 

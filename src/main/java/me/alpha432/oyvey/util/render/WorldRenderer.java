@@ -21,6 +21,16 @@ public final class WorldRenderer {
    }
 
    @Nullable
+   public static float[] toScreenUnclipped(double worldX, double worldY, double worldZ) {
+      Camera camera = Util.mc.gameRenderer.getMainCamera();
+      if (!camera.isInitialized()) return null;
+      Vec3 position = camera.position();
+      return ScreenProjection.pointUnclipped(camera.getViewRotationProjectionMatrix(new Matrix4f()),
+         worldX - position.x, worldY - position.y, worldZ - position.z,
+         Util.mc.getWindow().getGuiScaledWidth(), Util.mc.getWindow().getGuiScaledHeight());
+   }
+
+   @Nullable
    public static float[] aabbToScreen(AABB box) {
       Camera camera = Util.mc.gameRenderer.getMainCamera();
       if (!camera.isInitialized()) return null;

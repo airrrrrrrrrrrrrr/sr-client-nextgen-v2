@@ -9,14 +9,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(Level.class)
 public class MixinLevel {
-   @Inject(method = "getOverworldClockTime()J", at = @At("HEAD"), cancellable = true)
-   private void oyvey$overrideTime(CallbackInfoReturnable<Long> cir) {
-      Ambience a = Ambience.INSTANCE;
-      if (a != null && a.isEnabled() && a.customTime.getValue()) {
-         cir.setReturnValue((long)a.time.getValue().intValue());
-      }
-   }
-
    @Inject(method = "getRainLevel(F)F", at = @At("HEAD"), cancellable = true)
    private void oyvey$overrideRain(float partial, CallbackInfoReturnable<Float> cir) {
       Ambience a = Ambience.INSTANCE;

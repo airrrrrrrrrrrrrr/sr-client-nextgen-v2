@@ -19,6 +19,7 @@ public record RoundedOutlineRenderState(
    float y1,
    float radius,
    float thickness,
+   float fringe,
    int color,
    @Nullable ScreenRectangle scissorArea,
    @Nullable ScreenRectangle bounds
@@ -32,38 +33,36 @@ public record RoundedOutlineRenderState(
       float radius,
       float thickness,
       int color,
-      @Nullable ScreenRectangle scissorArea
+      @Nullable ScreenRectangle scissorArea,
+      double pixelsPerGuiUnit
    ) {
       float halfShort = Math.min(width, height) * 0.5F;
       float clampedRadius = Math.max(0.0F, Math.min(radius, halfShort));
       float clampedThickness = Math.max(0.1F, Math.min(thickness, Math.max(0.1F, halfShort)));
-      ScreenRectangle rawBounds = new ScreenRectangle(
-         (int)Math.floor(x) - 2,
-         (int)Math.floor(y) - 2,
-         Math.max(1, (int)Math.ceil(width) + 4),
-         Math.max(1, (int)Math.ceil(height) + 4)
-      ).transformMaxBounds(pose);
-      ScreenRectangle clippedBounds = scissorArea == null ? rawBounds : scissorArea.intersection(rawBounds);
+      float fringe = RoundedGeometry.fringe(pose, pixelsPerGuiUnit);
+      ScreenRectangle clippedBounds = RoundedGeometry.bounds(pose, x, y, width, height, fringe, scissorArea);
       return new RoundedOutlineRenderState(
-         new Matrix3x2f(pose), x, y, x + width, y + height, clampedRadius, clampedThickness, color, scissorArea, clippedBounds
+         new Matrix3x2f(pose), x, y, x + width, y + height, clampedRadius, clampedThickness, fringe, color, scissorArea, clippedBounds
       );
    }
 
    @Override
    public void buildVertices(VertexConsumer consumer) {
-      float halfU = (this.x1 - this.x0) * 0.5F;
-      float halfV = (this.y1 - this.y0) * 0.5F;
-      float packed = this.radius + Math.min(this.thickness, 255.0F) / 256.0F;
+      float halfU = (this.x1 - this.x0) * 0.5F + this.fringe;
+      float halfV = (this.y1 - this.y0) * 0.5F + this.fringe;
+      float halfShort = Math.min(halfU, halfV) - this.fringe;
+      int radius = RoundedGeometry.parameter(this.radius, halfShort);
+      int thickness = RoundedGeometry.parameter(this.thickness, halfShort);
       Vector2f scratch = new Vector2f();
-      this.addVertex(consumer, scratch, this.x0, this.y0, -halfU, -halfV, packed);
-      this.addVertex(consumer, scratch, this.x0, this.y1, -halfU, halfV, packed);
-      this.addVertex(consumer, scratch, this.x1, this.y1, halfU, halfV, packed);
-      this.addVertex(consumer, scratch, this.x1, this.y0, halfU, -halfV, packed);
+      this.addVertex(consumer, scratch, this.x0 - this.fringe, this.y0 - this.fringe, -halfU, -halfV, radius, thickness);
+      this.addVertex(consumer, scratch, this.x0 - this.fringe, this.y1 + this.fringe, -halfU, halfV, radius, thickness);
+      this.addVertex(consumer, scratch, this.x1 + this.fringe, this.y1 + this.fringe, halfU, halfV, radius, thickness);
+      this.addVertex(consumer, scratch, this.x1 + this.fringe, this.y0 - this.fringe, halfU, -halfV, radius, thickness);
    }
 
-   private void addVertex(VertexConsumer consumer, Vector2f scratch, float x, float y, float u, float v, float packed) {
+   private void addVertex(VertexConsumer consumer, Vector2f scratch, float x, float y, float u, float v, int radius, int thickness) {
       this.pose.transformPosition(x, y, scratch);
-      consumer.addVertex(scratch.x, scratch.y, packed).setUv(u, v).setColor(this.color);
+      consumer.addVertex(scratch.x, scratch.y, this.fringe).setUv(u, v).setUv2(radius, thickness).setColor(this.color);
    }
 
    @Override

@@ -32,7 +32,7 @@ public class Pipelines {
       .withLocation(Identifier.fromNamespaceAndPath("oyvey", "pipeline/rounded_rect"))
       .withVertexShader(ROUNDED_RECT_SHADER)
       .withFragmentShader(ROUNDED_RECT_SHADER)
-      .withVertexFormat(DefaultVertexFormat.POSITION_TEX_COLOR, Mode.QUADS)
+      .withVertexFormat(DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, Mode.QUADS)
       .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
       .withCull(false)
       .build();
@@ -42,10 +42,36 @@ public class Pipelines {
       .withLocation(Identifier.fromNamespaceAndPath("oyvey", "pipeline/rounded_outline"))
       .withVertexShader(ROUNDED_OUTLINE_SHADER)
       .withFragmentShader(ROUNDED_OUTLINE_SHADER)
-      .withVertexFormat(DefaultVertexFormat.POSITION_TEX_COLOR, Mode.QUADS)
+      .withVertexFormat(DefaultVertexFormat.POSITION_COLOR_TEX_LIGHTMAP, Mode.QUADS)
       .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
       .withCull(false)
       .build();
+   public static final RenderPipeline GUI_TARGET_GLOW = createTargetGlowPipeline(false);
+   public static final RenderPipeline GUI_TARGET_HALO = createTargetGlowPipeline(true);
+
+   private static RenderPipeline createTargetGlowPipeline(boolean halo) {
+      RenderPipeline original = RenderPipelines.GUI_TEXTURED;
+      Builder builder = RenderPipeline.builder(new Snippet[0])
+         .withLocation(Identifier.fromNamespaceAndPath("oyvey", halo ? "pipeline/target_halo" : "pipeline/target_glow"))
+         .withVertexShader(halo ? Identifier.fromNamespaceAndPath("oyvey", "core/target_halo") : original.getVertexShader()).withFragmentShader(halo
+            ? Identifier.fromNamespaceAndPath("oyvey", "core/target_halo") : original.getFragmentShader())
+         .withVertexFormat(original.getVertexFormat(), original.getVertexFormatMode())
+         .withColorTargetState(new ColorTargetState(new BlendFunction(
+            com.mojang.blaze3d.platform.SourceFactor.SRC_ALPHA, com.mojang.blaze3d.platform.DestFactor.ONE,
+            com.mojang.blaze3d.platform.SourceFactor.ZERO, com.mojang.blaze3d.platform.DestFactor.ONE))).withCull(false);
+      if (original.getDepthStencilState() != null) builder.withDepthStencilState(original.getDepthStencilState());
+      original.getSamplers().forEach(builder::withSampler);
+      for (UniformDescription uniform : original.getUniforms()) {
+         if (uniform.textureFormat() != null) builder.withUniform(uniform.name(), uniform.type(), uniform.textureFormat());
+         else builder.withUniform(uniform.name(), uniform.type());
+      }
+      original.getShaderDefines().flags().forEach(builder::withShaderDefine);
+      original.getShaderDefines().values().forEach((name, value) -> {
+         if (value.indexOf('.') >= 0) builder.withShaderDefine(name, Float.parseFloat(value));
+         else builder.withShaderDefine(name, Integer.parseInt(value));
+      });
+      return builder.build();
+   }
    static final RenderPipeline GLOBAL_QUADS_PIPELINE = RenderPipeline.builder(new Snippet[]{RenderPipelines.DEBUG_FILLED_SNIPPET})
       .withLocation("pipeline/global_fill_pipeline")
       .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, Mode.QUADS)
@@ -53,6 +79,14 @@ public class Pipelines {
       .withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
       .withCull(false)
       .build();
+   static final RenderPipeline TARGET_GLOW_QUADS_PIPELINE = RenderPipeline.builder(new Snippet[]{RenderPipelines.DEBUG_FILLED_SNIPPET})
+      .withLocation(Identifier.fromNamespaceAndPath("oyvey", "pipeline/target_glow_quads"))
+      .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, Mode.QUADS)
+      .withDepthStencilState(new DepthStencilState(CompareOp.ALWAYS_PASS, false))
+      .withColorTargetState(new ColorTargetState(new BlendFunction(
+         com.mojang.blaze3d.platform.SourceFactor.SRC_ALPHA, com.mojang.blaze3d.platform.DestFactor.ONE,
+         com.mojang.blaze3d.platform.SourceFactor.ZERO, com.mojang.blaze3d.platform.DestFactor.ONE)))
+      .withCull(false).build();
    static final RenderPipeline GLOBAL_LINES_PIPELINE = RenderPipeline.builder(new Snippet[]{RenderPipelines.LINES_SNIPPET})
       .withLocation("pipeline/global_lines_pipeline")
       .withVertexFormat(DefaultVertexFormat.POSITION_COLOR_LINE_WIDTH, Mode.LINES)

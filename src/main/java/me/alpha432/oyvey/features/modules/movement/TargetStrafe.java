@@ -3,9 +3,7 @@ package me.alpha432.oyvey.features.modules.movement;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.combat.GrimAura;
-import me.alpha432.oyvey.features.modules.combat.KillAura;
 import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
-import me.alpha432.oyvey.features.modules.combat.KillauraNew;
 import me.alpha432.oyvey.features.settings.Setting;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
@@ -66,11 +64,6 @@ public class TargetStrafe extends Module {
    }
 
    private Entity getAuraTarget() {
-      KillAura ka = OyVey.moduleManager.getModuleByClass(KillAura.class);
-      if (ka != null && ka.isEnabled() && this.validTarget(ka.getTarget())) {
-         return ka.getTarget();
-      }
-
       GrimAura ga = OyVey.moduleManager.getModuleByClass(GrimAura.class);
       if (ga != null && ga.isEnabled() && this.validTarget(ga.getTarget())) {
          return ga.getTarget();
@@ -80,8 +73,7 @@ public class TargetStrafe extends Module {
       if (kr != null && kr.isEnabled() && this.validTarget(kr.getTarget())) {
          return kr.getTarget();
       }
-      KillauraNew kn = OyVey.moduleManager.getModuleByClass(KillauraNew.class);
-      return kn != null && kn.isEnabled() && this.validTarget(kn.getTarget()) ? kn.getTarget() : null;
+      return null;
    }
 
    private boolean validTarget(Entity target) {

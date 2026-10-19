@@ -21,6 +21,12 @@ dependencies {
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
+    // Custom HUD/GUI glyphs are rasterized by Skija and stitched into the
+    // game's normal atlas. Package both the Java API and the native runtime.
+    implementation include("io.github.humbleui:skija-shared:${project.skija_version}")
+    implementation include("io.github.humbleui:types:0.2.0")
+    runtimeOnly include("io.github.humbleui:skija-${project.skija_platform}:${project.skija_version}")
+
     // Recovered from the original fat JAR. This contains MinecraftAuth,
     // LuaJ, Gson/JJWT, and their supporting classes.
     implementation files('libs/bundled-dependencies.jar')
@@ -59,6 +65,14 @@ sourceSets {
         compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
         runtimeClasspath += sourceSets.main.runtimeClasspath
     }
+    fontRegression {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
+    menuRegression {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
 }
 def scaffoldRegressionTest = tasks.register('scaffoldRegressionTest', JavaExec) {
     dependsOn tasks.named('scaffoldRegressionClasses')
@@ -70,10 +84,109 @@ def scaffoldRegressionTest = tasks.register('scaffoldRegressionTest', JavaExec) 
         languageVersion = JavaLanguageVersion.of(25)
     }
 }
-tasks.named('check') {
-    dependsOn scaffoldRegressionTest
+def fontRegressionTest = tasks.register('fontRegressionTest', JavaExec) {
+    dependsOn tasks.named('fontRegressionClasses')
+    classpath = sourceSets.fontRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.util.render.SkijaFontChecks'
+    systemProperty 'font.preview.path', layout.buildDirectory.file('font-regression/skija-fonts.png').get().asFile.absolutePath
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
 
+tasks.named('check') {
+    dependsOn scaffoldRegressionTest, fontRegressionTest
+}
+
+def menuRegressionTest = tasks.register('menuRegressionTest', JavaExec) {
+    dependsOn tasks.named('menuRegressionClasses')
+    classpath = sourceSets.menuRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.auth.AccountLoginChecks'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+}
+tasks.named('check') { dependsOn menuRegressionTest }
+
+tasks.register('killInsultsTest', JavaExec) {
+    dependsOn tasks.named('menuRegressionClasses')
+    classpath = sourceSets.menuRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.util.KillInsultsChecks'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+// Optional local GPU validation; kept out of headless/CI builds.
+tasks.register('targetEspTest', JavaExec) {
+    dependsOn tasks.named('fontRegressionClasses')
+    classpath = sourceSets.fontRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.util.render.TargetEspChecks'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+tasks.register('roundedRenderingTest', JavaExec) {
+    dependsOn tasks.named('fontRegressionClasses')
+    classpath = sourceSets.fontRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.util.render.RoundedRenderingChecks'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+// A running dev client lazily loads inner classes and shaders. Give every
+// launch immutable project output so later builds cannot mix class versions.
+tasks.named('runClient').configure {
+    dependsOn tasks.named('classes')
+    def snapshot = layout.projectDirectory.dir(".gradle/client-runtime/${System.currentTimeMillis()}").asFile
+    def outputs = sourceSets.main.output.files.toList()
+    def originalClasspath = classpath.files.toList()
+    def replacements = [:]
+    def destinations = [:]
+    def encodeDli = { String value ->
+        def encoded = new StringBuilder()
+        for (int i = 0; i < value.length(); i++) {
+            int c = value.charAt(i)
+            if (c == 32 || (c == 64 && i > 0 && value.charAt(i - 1) == 64)) encoded.append(String.format('@@%04x', c))
+            else encoded.append((char)c)
+        }
+        encoded.toString()
+    }
+    outputs.eachWithIndex { original, index ->
+        def destination = new File(snapshot, "output-${index}")
+        destinations[original] = destination
+        [original.absolutePath, original.absolutePath.replace('\\', '/')].each { from ->
+            def to = from.contains('\\') ? destination.absolutePath : destination.absolutePath.replace('\\', '/')
+            replacements[from] = to
+            replacements[encodeDli(from)] = encodeDli(to)
+        }
+    }
+    def rewrite = { String value ->
+        replacements.each { from, to -> value = value.replace(from, to) }
+        value
+    }
+    // Loom finalizes internalClasspath before task actions. Set it during
+    // configuration, and populate its immutable destinations just before launch.
+    classpath = project.files(originalClasspath.collect { new File(rewrite(it.absolutePath)) })
+    def rawJvm = jvmArguments.get().toList()
+    def dliArgument = rawJvm.find { it.startsWith('-Dfabric.dli.config=') }
+    def originalConfig = null
+    def configSnapshot = new File(snapshot, 'launch.cfg')
+    if (dliArgument != null) {
+        def encodedPath = dliArgument.substring('-Dfabric.dli.config='.length())
+        def decodedPath = encodedPath.replaceAll(/@@([0-9a-fA-F]{4})/) { whole, hex -> Character.toString((char)Integer.parseInt(hex, 16)) }
+        originalConfig = file(decodedPath)
+        replacements[encodedPath] = encodeDli(configSnapshot.absolutePath)
+        replacements[decodedPath] = configSnapshot.absolutePath
+    }
+    jvmArguments.set(rawJvm.collect { rewrite(it) })
+    systemProperties = systemProperties.collectEntries { key, value -> [(key): rewrite(value.toString())] }
+    jvmArgs = jvmArgs.collect { rewrite(it) }
+    doFirst {
+        destinations.each { original, destination ->
+            if (original.isDirectory()) project.copy { from original; into destination }
+        }
+        if (originalConfig != null && originalConfig.isFile()) {
+            configSnapshot.parentFile.mkdirs()
+            configSnapshot.setText(rewrite(originalConfig.getText('UTF-8')), 'UTF-8')
+        }
+        logger.lifecycle("Launching from isolated project output: ${snapshot}")
+    }
+}
 jar {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 

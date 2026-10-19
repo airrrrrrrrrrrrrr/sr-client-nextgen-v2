@@ -57,10 +57,10 @@ public class MixinEntityRenderDispatcher {
                this.oyvey$savedHeadRotO = player.yHeadRotO;
                this.oyvey$savedXRot = player.getXRot();
                this.oyvey$savedXRotO = player.xRotO;
-               // Scaffold turns the model's head while its body/camera retain
-               // the user's heading. These fields are restored after extraction.
-               player.yBodyRot = head == null ? renderYaw : Scaffold.visualYaw;
-               player.yBodyRotO = head == null ? prevYaw : Scaffold.visualYaw;
+               // Rotate the entire model for Scaffold. Extraction is render-only;
+               // the camera and physics fields are restored immediately below.
+               player.yBodyRot = renderYaw;
+               player.yBodyRotO = prevYaw;
                player.yHeadRot = renderYaw;
                player.yHeadRotO = prevYaw;
                player.setXRot(renderPitch);

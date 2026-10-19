@@ -9,6 +9,7 @@ import com.mojang.blaze3d.vertex.VertexFormat.Mode;
 import com.mojang.math.Axis;
 import java.awt.Color;
 import me.alpha432.oyvey.util.render.state.RectRenderState;
+import me.alpha432.oyvey.util.render.state.CornerMaskRenderState;
 import me.alpha432.oyvey.util.render.state.RoundedOutlineRenderState;
 import me.alpha432.oyvey.util.render.state.RoundedRectRenderState;
 import me.alpha432.oyvey.util.traits.Util;
@@ -96,22 +97,9 @@ public class RenderUtil implements Util {
 
       if (r <= 0.0F) {
          ctx.fill(Math.round(x), Math.round(y), Math.round(x + w), Math.round(y + h), color);
-      } else if (highQuality) {
-         ctx.guiRenderState
-            .addGuiElement(RoundedRectRenderState.solid(new Matrix3x2f(ctx.pose()), x, y, w, h, r, color, ctx.scissorStack.peek()));
       } else {
-         int ix = Math.round(x);
-         int iy = Math.round(y);
-         int iw = Math.max(1, Math.round(w));
-         int ih = Math.max(1, Math.round(h));
-         int ir = Math.max(1, Math.min(Math.round(r), Math.min(iw / 2, ih / 2)));
-         ctx.fill(ix, iy + ir, ix + iw, iy + ih - ir, color);
-
-         for (int i = 0; i < ir; i++) {
-            int e = (int)Math.sqrt((double)ir * ir - (double)(ir - i) * (ir - i));
-            ctx.fill(ix + ir - e, iy + i, ix + iw - ir + e, iy + i + 1, color);
-            ctx.fill(ix + ir - e, iy + ih - 1 - i, ix + iw - ir + e, iy + ih - i, color);
-         }
+         ctx.guiRenderState.addGuiElement(RoundedRectRenderState.solid(new Matrix3x2f(ctx.pose()),
+            x, y, w, h, r, color, ctx.scissorStack.peek(), mc.getWindow().getGuiScale()));
       }
    }
 
@@ -122,7 +110,7 @@ public class RenderUtil implements Util {
          return;
       }
 
-      if (!highQuality || r <= 0.0F) {
+      if (r <= 0.0F) {
          gradient(
             ctx,
             Math.round(x),
@@ -139,7 +127,7 @@ public class RenderUtil implements Util {
 
       ctx.guiRenderState
          .addGuiElement(
-            RoundedRectRenderState.gradient(new Matrix3x2f(ctx.pose()), x, y, w, h, r, colorA, colorB, vertical, ctx.scissorStack.peek())
+            RoundedRectRenderState.gradient(new Matrix3x2f(ctx.pose()), x, y, w, h, r, colorA, colorB, vertical, ctx.scissorStack.peek(), mc.getWindow().getGuiScale())
          );
    }
 
@@ -148,15 +136,10 @@ public class RenderUtil implements Util {
          return;
       }
 
-      if (!highQuality) {
-         rect(ctx, x, y, x + w, y + h, color, thickness);
-         return;
-      }
-
       ctx.guiRenderState
          .addGuiElement(
             RoundedOutlineRenderState.create(
-               new Matrix3x2f(ctx.pose()), x, y, w, h, r, thickness, color, ctx.scissorStack.peek()
+               new Matrix3x2f(ctx.pose()), x, y, w, h, r, thickness, color, ctx.scissorStack.peek(), mc.getWindow().getGuiScale()
             )
          );
    }
@@ -210,58 +193,9 @@ public class RenderUtil implements Util {
    }
 
    private static void maskCorner(GuiGraphicsExtractor ctx, int ox, int oy, int r, boolean posX, boolean posY, int a, int rgb) {
-      if (!highQuality) {
-         float rsq = (float)r * r;
-
-         for (int py = 0; py < r; py++) {
-            float dy = py + 0.5F - (posY ? 0.0F : r);
-            float hw = (float)Math.sqrt(Math.max(0.0F, rsq - dy * dy));
-            if (!posX) {
-               int bx = Math.round(r - hw);
-               if (bx > 0) {
-                  ctx.fill(ox, oy + py, ox + bx, oy + py + 1, a << 24 | rgb);
-               }
-            } else {
-               int bx = Math.round(hw);
-               if (bx < r) {
-                  ctx.fill(ox + bx, oy + py, ox + r, oy + py + 1, a << 24 | rgb);
-               }
-            }
-         }
-      } else {
-         float[] cov = CornerCache.getCov(r, posX, posY);
-
-         for (int py = 0; py < r; py++) {
-            int opaqueX0 = -1;
-
-            for (int px = 0; px < r; px++) {
-               float outside = 1.0F - cov[px * r + py];
-               if (outside == 1.0F) {
-                  if (opaqueX0 < 0) {
-                     opaqueX0 = px;
-                  }
-               } else {
-                  if (opaqueX0 >= 0) {
-                     ctx.fill(ox + opaqueX0, oy + py, ox + px, oy + py + 1, a << 24 | rgb);
-                     opaqueX0 = -1;
-                  }
-
-                  if (outside > 0.0F) {
-                     int pa = Math.round(a * outside);
-                     if (pa > 0) {
-                        ctx.fill(ox + px, oy + py, ox + px + 1, oy + py + 1, pa << 24 | rgb);
-                     }
-                  }
-               }
-            }
-
-            if (opaqueX0 >= 0) {
-               ctx.fill(ox + opaqueX0, oy + py, ox + r, oy + py + 1, a << 24 | rgb);
-            }
-         }
-      }
+      ctx.guiRenderState.addGuiElement(CornerMaskRenderState.create(new Matrix3x2f(ctx.pose()),
+         ox, oy, r, posX, posY, a << 24 | rgb, ctx.scissorStack.peek()));
    }
-
    public static void rect(PoseStack stack, float x1, float y1, float x2, float y2, int color) {
       rectFilled(stack, x1, y1, x2, y2, color);
    }

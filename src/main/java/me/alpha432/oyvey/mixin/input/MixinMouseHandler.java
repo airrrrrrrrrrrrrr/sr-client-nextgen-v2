@@ -23,6 +23,15 @@ public class MixinMouseHandler {
 
    @Inject(method = "onButton", at = @At("HEAD"), cancellable = true)
    private void onButton(long window, MouseButtonInfo input, int action, CallbackInfo ci) {
+      if (input.button() == 0 && action == 1 && OyVey.recordedClickManager != null
+         && window == Util.mc.getWindow().handle()) {
+         if (Util.mc.player != null && Util.mc.level != null && Util.mc.screen == null
+            && Util.mc.player.isAlive() && Util.mc.options.keyShift.isDown()) {
+            OyVey.recordedClickManager.click(System.nanoTime());
+         } else {
+            OyVey.recordedClickManager.pause();
+         }
+      }
       if (Util.EVENT_BUS.post(new MouseInputEvent(input.button(), action))) {
          ci.cancel();
       }
@@ -32,7 +41,7 @@ public class MixinMouseHandler {
    private void oyvey$preTurnPlayer(double sensitivityScale, CallbackInfo ci) {
       FreeLookModule fl = FreeLookModule.INSTANCE;
       boolean recording = OyVey.recordedRotationManager != null && OyVey.recordedRotationManager.isRecording();
-      this.oyvey$captureTurn = Util.mc.player != null && (recording || fl != null && fl.isFreelooking());
+      this.oyvey$captureTurn = Util.mc.player != null && Util.mc.screen == null && (recording || fl != null && fl.isFreelooking());
       if (this.oyvey$captureTurn) {
          this.oyvey$preYaw = Util.mc.player.getYRot();
          this.oyvey$prePitch = Util.mc.player.getXRot();

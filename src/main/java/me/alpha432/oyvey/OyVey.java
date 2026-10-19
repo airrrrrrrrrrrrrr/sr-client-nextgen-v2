@@ -16,6 +16,7 @@ import me.alpha432.oyvey.manager.ModuleManager;
 import me.alpha432.oyvey.manager.PositionManager;
 import me.alpha432.oyvey.manager.PreferencesManager;
 import me.alpha432.oyvey.manager.RecordedRotationManager;
+import me.alpha432.oyvey.manager.RecordedClickManager;
 import me.alpha432.oyvey.manager.RotationManager;
 import me.alpha432.oyvey.manager.ScriptManager;
 import me.alpha432.oyvey.manager.ServerManager;
@@ -37,6 +38,7 @@ public class OyVey implements ModInitializer, ClientModInitializer {
    public static CapeManager capeManager;
    public static RotationManager rotationManager;
    public static RecordedRotationManager recordedRotationManager;
+   public static RecordedClickManager recordedClickManager;
    public static PositionManager positionManager;
    public static HoleManager holeManager;
    public static EventManager eventManager;
@@ -71,6 +73,8 @@ public class OyVey implements ModInitializer, ClientModInitializer {
       rotationManager = new RotationManager();
       recordedRotationManager = new RecordedRotationManager();
       configManager.addConfig(recordedRotationManager);
+      recordedClickManager = new RecordedClickManager();
+      configManager.addConfig(recordedClickManager);
       positionManager = new PositionManager();
       friendManager = new FriendManager();
       colorManager = new ColorManager();

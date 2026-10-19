@@ -6,7 +6,7 @@ import net.minecraft.network.chat.FontDescription;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 
-/** Bundled font resources shared by HUD drawing and width measurement. */
+/** Font resources shared by layout and drawing; custom TTF providers use Skija. */
 public enum HudFont {
    MINECRAFT, ARIAL, VERDANA, TAHOMA, CONSOLAS, SEGOE, COMIC, GEORGIA, TREBUCHET, COURIER;
 

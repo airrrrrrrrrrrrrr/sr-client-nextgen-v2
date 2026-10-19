@@ -8,6 +8,7 @@ import net.minecraft.client.gui.render.TextureSetup;
 import net.minecraft.client.renderer.state.gui.GuiElementRenderState;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix3x2f;
+import org.joml.Vector2f;
 
 /**
  * RenderKit-style SDF rounded rectangle adapted to Minecraft 26.1's GUI state API.
@@ -20,6 +21,7 @@ public record RoundedRectRenderState(
    float x1,
    float y1,
    float radius,
+   float fringe,
    int colorA,
    int colorB,
    boolean vertical,
@@ -27,9 +29,10 @@ public record RoundedRectRenderState(
    @Nullable ScreenRectangle bounds
 ) implements GuiElementRenderState {
    public static RoundedRectRenderState solid(
-      Matrix3x2f pose, float x, float y, float width, float height, float radius, int color, @Nullable ScreenRectangle scissorArea
+      Matrix3x2f pose, float x, float y, float width, float height, float radius, int color, @Nullable ScreenRectangle scissorArea,
+      double pixelsPerGuiUnit
    ) {
-      return gradient(pose, x, y, width, height, radius, color, color, false, scissorArea);
+      return gradient(pose, x, y, width, height, radius, color, color, false, scissorArea, pixelsPerGuiUnit);
    }
 
    public static RoundedRectRenderState gradient(
@@ -42,33 +45,36 @@ public record RoundedRectRenderState(
       int colorA,
       int colorB,
       boolean vertical,
-      @Nullable ScreenRectangle scissorArea
+      @Nullable ScreenRectangle scissorArea,
+      double pixelsPerGuiUnit
    ) {
       float clampedRadius = Math.max(0.01F, Math.min(radius, Math.min(width, height) * 0.5F));
-      ScreenRectangle rawBounds = new ScreenRectangle(
-         (int)Math.floor(x) - 1,
-         (int)Math.floor(y) - 1,
-         Math.max(1, (int)Math.ceil(width) + 2),
-         Math.max(1, (int)Math.ceil(height) + 2)
-      ).transformMaxBounds(pose);
-      ScreenRectangle clippedBounds = scissorArea == null ? rawBounds : scissorArea.intersection(rawBounds);
+      float fringe = RoundedGeometry.fringe(pose, pixelsPerGuiUnit);
+      ScreenRectangle clippedBounds = RoundedGeometry.bounds(pose, x, y, width, height, fringe, scissorArea);
       return new RoundedRectRenderState(
-         new Matrix3x2f(pose), x, y, x + width, y + height, clampedRadius, colorA, colorB, vertical, scissorArea, clippedBounds
+         new Matrix3x2f(pose), x, y, x + width, y + height, clampedRadius, fringe, colorA, colorB, vertical, scissorArea, clippedBounds
       );
    }
 
    @Override
    public void buildVertices(VertexConsumer consumer) {
-      float halfU = (this.x1 - this.x0) * 0.5F / this.radius;
-      float halfV = (this.y1 - this.y0) * 0.5F / this.radius;
+      float halfU = (this.x1 - this.x0) * 0.5F + this.fringe;
+      float halfV = (this.y1 - this.y0) * 0.5F + this.fringe;
+      int radius = RoundedGeometry.parameter(this.radius, Math.min(halfU, halfV) - this.fringe);
       int topLeft = this.colorA;
       int bottomLeft = this.vertical ? this.colorB : this.colorA;
       int bottomRight = this.colorB;
       int topRight = this.vertical ? this.colorA : this.colorB;
-      consumer.addVertexWith2DPose(this.pose, this.x0, this.y0).setUv(-halfU, -halfV).setColor(topLeft);
-      consumer.addVertexWith2DPose(this.pose, this.x0, this.y1).setUv(-halfU, halfV).setColor(bottomLeft);
-      consumer.addVertexWith2DPose(this.pose, this.x1, this.y1).setUv(halfU, halfV).setColor(bottomRight);
-      consumer.addVertexWith2DPose(this.pose, this.x1, this.y0).setUv(halfU, -halfV).setColor(topRight);
+      Vector2f scratch = new Vector2f();
+      addVertex(consumer, scratch, this.x0 - this.fringe, this.y0 - this.fringe, -halfU, -halfV, radius, topLeft);
+      addVertex(consumer, scratch, this.x0 - this.fringe, this.y1 + this.fringe, -halfU, halfV, radius, bottomLeft);
+      addVertex(consumer, scratch, this.x1 + this.fringe, this.y1 + this.fringe, halfU, halfV, radius, bottomRight);
+      addVertex(consumer, scratch, this.x1 + this.fringe, this.y0 - this.fringe, halfU, -halfV, radius, topRight);
+   }
+
+   private void addVertex(VertexConsumer consumer, Vector2f scratch, float x, float y, float u, float v, int radius, int color) {
+      this.pose.transformPosition(x, y, scratch);
+      consumer.addVertex(scratch.x, scratch.y, this.fringe).setUv(u, v).setUv2(radius, 0).setColor(color);
    }
 
    @Override
