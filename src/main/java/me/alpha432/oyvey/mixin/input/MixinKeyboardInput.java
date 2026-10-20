@@ -5,6 +5,7 @@ import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
 import me.alpha432.oyvey.features.modules.combat.KnockbackDisplace;
 import me.alpha432.oyvey.features.modules.combat.BedNuker;
 import me.alpha432.oyvey.features.modules.combat.WTap;
+import me.alpha432.oyvey.features.modules.combat.PvpBot;
 import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.features.modules.movement.SprintModule;
 import me.alpha432.oyvey.features.modules.movement.Speed;
@@ -12,6 +13,8 @@ import me.alpha432.oyvey.features.modules.movement.InventoryMove;
 import me.alpha432.oyvey.features.modules.player.VelocityModule;
 import net.minecraft.client.player.ClientInput;
 import net.minecraft.client.player.KeyboardInput;
+import net.minecraft.world.entity.player.Input;
+import net.minecraft.world.phys.Vec2;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -31,6 +34,11 @@ public class MixinKeyboardInput {
       if (OyVey.moduleManager == null) {
          return;
       }
+      ClientInput nativeInput = (ClientInput)(Object)this;
+      Input originalKeys = nativeInput.keyPresses;
+      Vec2 originalVector = nativeInput.getMoveVector();
+      Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
+      if (scaffold != null) scaffold.captureRawInput(nativeInput, originalKeys, originalVector);
 
       KillauraRecode aura = OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
       if (aura != null) {
@@ -41,7 +49,6 @@ public class MixinKeyboardInput {
       BedNuker nuker = OyVey.moduleManager.getModuleByClass(BedNuker.class);
       if (nuker != null) nuker.applyInput((ClientInput)(Object)this);
 
-      Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
       if (scaffold != null) {
          scaffold.applyInput((ClientInput)(Object)this);
       }
@@ -50,6 +57,9 @@ public class MixinKeyboardInput {
       if (wTap != null) {
          wTap.applyInputReset((ClientInput)(Object)this);
       }
+
+      PvpBot pvpBot = OyVey.moduleManager.getModuleByClass(PvpBot.class);
+      if (pvpBot != null) pvpBot.applyInput((ClientInput)(Object)this);
 
       SprintModule sprint = OyVey.moduleManager.getModuleByClass(SprintModule.class);
       if (sprint != null) {
@@ -61,12 +71,14 @@ public class MixinKeyboardInput {
          speed.applyVulcan2Input((ClientInput)(Object)this);
       }
       if (scaffold != null) {
+         scaffold.restoreUncorrectedInput(nativeInput,originalKeys,originalVector);
          scaffold.enforceSprintInput((ClientInput)(Object)this);
       }
       VelocityModule velocity = OyVey.moduleManager.getModuleByClass(VelocityModule.class);
       if (velocity != null) velocity.applyJumpResetInput((ClientInput)(Object)this);
       if (aura != null) {
          aura.applyCriticalSprintInput((ClientInput)(Object)this);
+         aura.applyProSprintInput((ClientInput)(Object)this);
          aura.recordInputTrace((ClientInput)(Object)this);
       }
    }

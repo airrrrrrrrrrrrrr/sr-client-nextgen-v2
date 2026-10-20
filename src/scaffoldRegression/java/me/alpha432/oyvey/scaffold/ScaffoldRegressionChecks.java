@@ -12,7 +12,9 @@ import me.alpha432.oyvey.features.modules.movement.scaffold.BackwardBridgeRotati
 import me.alpha432.oyvey.features.modules.movement.scaffold.TellyBridge;
 import me.alpha432.oyvey.features.modules.movement.scaffold.Telly2Bridge;
 import me.alpha432.oyvey.features.modules.movement.scaffold.OneTickBridgeRotation;
+import me.alpha432.oyvey.features.modules.movement.scaffold.ShortRotationPulse;
 import me.alpha432.oyvey.features.modules.movement.scaffold.GodBridge;
+import me.alpha432.oyvey.features.modules.movement.scaffold.AndromidaBridge;
 import me.alpha432.oyvey.features.modules.movement.scaffold.PlacementClickRate;
 import me.alpha432.oyvey.util.BacktrackHistory;
 import me.alpha432.oyvey.util.CombatLatency;
@@ -76,8 +78,15 @@ public final class ScaffoldRegressionChecks {
          return;
       }
       if (args.length > 0 && args[0].equals("rotation-input")) {
-         oneTickRotation(); oneTickNormalReplay(); oneTickAirReplay(); legitBlockClicks();
+         shortRotationPulse(); oneTickRotation(); oneTickNormalReplay(); oneTickAirReplay(); legitBlockClicks();
          System.out.println("Scaffold rotation and Legit input checks passed: " + checks);
+         return;
+      }
+      if (args.length > 0 && args[0].equals("scaffold-movefix-andromida")) {
+         scaffoldMovementFixToggle(); andromidaBridge();
+         shortRotationPulse(); oneTickRotation(); oneTickNormalReplay(); oneTickAirReplay(); scaffoldStartupMovement();
+         tellyCycle(); tellyForwardRecovery(); telly2Cycle(); tellyMovementReplay();
+         System.out.println("Scaffold MovementFix and Andromida checks passed: " + checks);
          return;
       }
       if (args.length > 0 && args[0].equals("legit-block")) {
@@ -196,6 +205,7 @@ public final class ScaffoldRegressionChecks {
       oneTickNormalReplay();
       knockbackSafeAim();
       scaffoldStartupMovement();
+      scaffoldMovementFixToggle(); andromidaBridge();
       tellyCycle();
       tellyForwardRecovery();
       tellyMovementReplay();
@@ -487,6 +497,27 @@ public final class ScaffoldRegressionChecks {
          require(placed>=21&&jumps>=3,"Godbridge keeps placing through repeated seven-block jump cycles: heading="+heading+" placed="+placed+" jumps="+jumps);
          require(landedSteps>=3,"Godbridge climbs at least three real block steps in each travel direction");
       }
+   }
+
+   private static void shortRotationPulse() {
+      ShortRotationPulse pulse = new ShortRotationPulse();
+      require(!pulse.active(), "an idle packet pulse cannot own aim");
+      long first = pulse.start(100_000_000L);
+      require(pulse.active() && pulse.remaining(first,100_000_000L)==5_000_000L,
+         "the deadline starts at packet submission, without waiting for a rendered frame");
+      require(!pulse.finish(first,104_999_999L,false), "a scheduled callback cannot return early");
+      require(pulse.finish(first,105_000_000L,false), "0.1 tick returns five milliseconds after the aim packet");
+      require(!pulse.finish(first,106_000_000L,false), "duplicate render and queued callbacks cannot send a second return");
+      long second = pulse.start(200_000_000L);
+      require(!pulse.finish(first,210_000_000L,true) && pulse.active(), "a previous callback cannot release a newer placement's aim");
+      pulse.clear();
+      require(!pulse.finish(second,220_000_000L,true), "world changes and server corrections invalidate queued returns");
+      long third = pulse.start(300_000_000L);
+      require(pulse.finish(third,300_000_001L,true), "disabling can restore aim immediately before the deadline");
+      long fourth = pulse.start(400_000_000L);
+      require(pulse.finish(fourth,399_000_000L,false), "a clock rollback releases the old packet pulse");
+      long fifth = pulse.start(500_000_000L);
+      require(pulse.finish(fifth,560_000_000L,false), "a busy client returns on its first available callback without another tick of waiting");
    }
 
    private static void oneTickRotation() {
@@ -913,7 +944,11 @@ public final class ScaffoldRegressionChecks {
       cycle.reset(); cycle.begin(1, 0); cycle.cast(1, 5, 2); cycle.requestReturn(2);
       require(cycle.phase() == RodLogic.Phase.RETRIEVING, "target switch retrieves the old hook rather than silently retargeting it");
       cycle.reset(); cycle.begin(1, 0); cycle.update(6, false, false, false, 4);
-      require(!cycle.active(), "obstructed or unaligned aim has a short timeout without switching weapons");
+      require(cycle.active() && !cycle.blocksMelee(), "slow rotations have time to align without reserving the weapon");
+      cycle.update(39, false, false, false, 4);
+      require(cycle.active(), "acquisition remains available while a slow turn finishes");
+      cycle.update(40, false, false, false, 4);
+      require(!cycle.active(), "an impossible cast eventually retries without switching weapons");
       for (int original = 0; original < 9; original++) for (int rod = 0; rod < 9; rod++) {
          require(RodLogic.restoreSlot(rod, rod, original, true, true) == original, "restore the exact previous slot");
          require(RodLogic.restoreSlot((rod + 1) % 9, rod, original, true, true) == -1, "manual hotbar input wins");
@@ -921,7 +956,24 @@ public final class ScaffoldRegressionChecks {
          require(RodLogic.restoreSlot(rod, rod, original, true, false) == -1, "old-world ownership cannot restore another player's slot");
       }
       Vec3 eyes = new Vec3(0, 1.62, 0);
-      for (double distance : new double[]{3.5, 4, 5, 6, 7}) for (int yaw = 0; yaw < 360; yaw += 45)
+      // Independent first/second-tick fixtures from native spawn and flight order.
+      AABB distant = new AABB(100, 100, 100, 101, 101, 101);
+      java.util.List<Vec3> starts = new java.util.ArrayList<>(), ends = new java.util.ArrayList<>();
+      RodLogic.intercept(eyes, 0, 0, distant, Vec3.ZERO, RodLogic.Flight.LEGACY,
+         (a, b) -> { starts.add(a); ends.add(b); return true; });
+      require(ends.get(0).distanceTo(new Vec3(-0.16, 1.52, 0)) < 1.0E-7, "1.8 spawns beside the player and below the eyes");
+      require(ends.get(1).distanceTo(new Vec3(-0.16, 1.52, 1.5)) < 1.0E-7, "1.8 first collision segment uses 1.5 speed without gravity yet");
+      require(ends.get(2).distanceTo(new Vec3(-0.16, 1.4832, 2.88)) < 1.0E-7, "1.8 applies 0.04 gravity and 0.92 drag after movement");
+      starts.clear(); ends.clear();
+      RodLogic.intercept(eyes, 0, 0, distant, Vec3.ZERO, RodLogic.Flight.MODERN,
+         (a, b) -> { starts.add(a); ends.add(b); return true; });
+      require(ends.get(0).distanceTo(new Vec3(0, 1.62, 0.3)) < 1.0E-7, "native hook spawns ahead of the eyes");
+      require(ends.get(1).distanceTo(new Vec3(0, 1.62, 1.4)) < 1.0E-7, "native collision uses velocity before gravity");
+      require(starts.get(2).distanceTo(new Vec3(0, 1.59, 1.4)) < 1.0E-7, "native movement applies gravity before the next collision segment");
+      require(ends.get(2).distanceTo(new Vec3(0, 1.5624, 2.412)) < 1.0E-7, "native second collision includes drag on previous gravity");
+      for (RodLogic.Flight flight : RodLogic.Flight.values())
+      for (double distance : flight == RodLogic.Flight.LEGACY ? new double[]{3.5, 4, 5, 6, 7, 8, 10}
+         : new double[]{3.5, 4, 5, 6, 7}) for (int yaw = 0; yaw < 360; yaw += 45)
       for (double strafe : new double[]{-0.2, 0, 0.2}) for (double away : new double[]{0, 0.15})
       for (double rise : new double[]{-0.08, 0, 0.08}) {
          double angle = Math.toRadians(yaw);
@@ -930,20 +982,132 @@ public final class ScaffoldRegressionChecks {
          Vec3 position = forward.scale(distance);
          AABB target = new AABB(position.x - 0.3, 0, position.z - 0.3, position.x + 0.3, 1.8, position.z + 0.3);
          Vec3 motion = side.scale(strafe).add(forward.scale(away)).add(0, rise, 0);
-         RodLogic.Shot shot = RodLogic.solve(eyes, target, motion, true);
-         int hit = RodLogic.intercept(eyes, shot.yaw(), shot.pitch(), target, motion, (a, b) -> true);
-         require(hit > 0 && hit <= 18, "predicted hook intersects moving hitbox in native flight replay: " + distance + "/" + yaw + "/" + motion);
-         require(RodLogic.intercept(eyes, shot.yaw(), shot.pitch(), target, motion, (a, b) -> false) == -1,
+         RodLogic.Shot shot = RodLogic.solve(eyes, target, motion, true, flight);
+         int hit = RodLogic.intercept(eyes, shot.yaw(), shot.pitch(), target, motion, flight, (a, b) -> true);
+         require(hit > 0 && hit <= 18, "predicted hook intersects moving hitbox in native flight replay: " + flight + "/" + distance + "/" + yaw + "/" + motion);
+         require(RodLogic.intercept(eyes, shot.yaw(), shot.pitch(), target, motion, flight, (a, b) -> false) == -1,
             "obstructed hook path never casts even if the final look is aligned");
-         require(RodLogic.intercept(eyes, shot.yaw() + 90, shot.pitch(), target, motion, (a, b) -> true) == -1,
+         require(RodLogic.intercept(eyes, shot.yaw() + 90, shot.pitch(), target, motion, flight, (a, b) -> true) == -1,
             "an unrelated transmitted rotation cannot trigger a cast");
       }
       AABB target = new AABB(-0.3, 0, 5.7, 0.3, 1.8, 6.3);
+      AABB escaping = target.move(0, 0, 4);
+      Vec3 escapeMotion = new Vec3(0.45, 0.3, 0.45);
+      RodLogic.Shot unreachable = RodLogic.solve(eyes, escaping, escapeMotion, true);
+      require(RodLogic.intercept(eyes, unreachable.yaw(), unreachable.pitch(), escaping, escapeMotion,
+         (a, b) -> true) == -1, "a distant target outrunning native hook flight cannot trigger a doomed cast");
       RodLogic.Shot stationary = RodLogic.solve(eyes, target, Vec3.ZERO, true);
       RodLogic.Shot disabled = RodLogic.solve(eyes, target, new Vec3(0.4, 0.2, 0), false);
       require(stationary.equals(disabled), "prediction toggle removes leading but retains native gravity compensation");
       require(Double.isFinite(RodLogic.solve(eyes, target, new Vec3(Double.NaN, 0, 0), true).point().lengthSqr()), "invalid motion never poisons the shared aim");
    }
+   private static void scaffoldMovementFixToggle() {
+      for (int mask = 0; mask < 16; mask++) {
+         Input raw = new Input((mask & 1) != 0, (mask & 2) != 0, (mask & 4) != 0, (mask & 8) != 0, false, false, false);
+         for (int controls = 0; controls < 8; controls++) {
+            Input changed = new Input(!raw.forward(), !raw.backward(), !raw.left(), !raw.right(),
+               (controls & 1) != 0, (controls & 2) != 0, (controls & 4) != 0);
+            Input restored = ScaffoldMovement.rawDirections(raw, changed);
+            require(restored.forward() == raw.forward() && restored.backward() == raw.backward()
+               && restored.left() == raw.left() && restored.right() == raw.right(), "OFF retains all physical WASD combinations after another writer");
+            require(restored.jump() == changed.jump() && restored.shift() == changed.shift() && restored.sprint() == changed.sprint(),
+               "raw direction restoration preserves unrelated native control bits");
+         }
+         for (float camera : new float[]{-720, -179, -45, 0, 90, 359, 720}) {
+            Input off = ScaffoldMovement.rotationKeys(raw, false);
+            require(TellyBridge.forwardYaw(off, camera) == camera, "OFF cannot steer the forward look to compensate for a held strafe key");
+            require(ScaffoldMovement.rotationKeys(raw, true) == raw, "ON retains directional bridge heading selection");
+            var bridge = new BackwardBridgeRotation();
+            float expected = Math.round(camera / 45.0F) * 45.0F + 180.5F;
+            require(bridge.heading(off, camera) == expected, "OFF keeps one backward heading for W, A, S, D and diagonals");
+         }
+      }
+      Input w = new Input(true, false, false, false, false, false, false);
+      var rawForward = SilentRotationMath.correctMovement(w, 0, 0);
+      Vec3 uncorrectedWorld = inputWorld(rawForward, 180);
+      Vec3 correctedWorld = inputWorld(SilentRotationMath.correctMovement(w, 0, 180), 180);
+      require(uncorrectedWorld.z < -0.99 && correctedWorld.z > 0.99,
+         "W while facing backward accelerates backward with OFF; ON alone preserves camera-forward travel");
+   }
+
+   private static void andromidaBridge() {
+      for (float heading : new float[]{0, 45, 90, 135, 180, 225, 270, 315}) {
+         Vec3 forward = Vec3.directionFromRotation(0, heading);
+         FakeWorld world = new FakeWorld(); world.nativeRaycast = true;
+         for (int x = -2; x <= 2; x++) for (int z = -2; z <= 2; z++) world.solid.add(new BlockPos(x, 0, z));
+         AndromidaBridge bridge = new AndromidaBridge();
+         Vec3 feet = new Vec3(0.5, 1, 0.5);
+         float yaw = heading, pitch = 15;
+         boolean roofBuilt = false, startupPlaced = false, jumped = false;
+         int takeoff = -100;
+         for (int tick = 0; tick < 36 && !roofBuilt; tick++) {
+            // A native takeoff raises eyes above the startup pillar's top.
+            Vec3 pose = tick - takeoff <= 3 ? feet.add(0, 0.42, 0) : feet;
+            world.playerBox = new AABB(pose.x-.3, pose.y, pose.z-.3, pose.x+.3, pose.y+1.8, pose.z+.3);
+            var step = bridge.plan(pose, pose.add(0, 1.62, 0), Vec3.ZERO, heading, 4.5, yaw, pitch, 0.5, true, world);
+            yaw = step.look().yaw(); pitch = step.look().pitch();
+            if (step.ready()) {
+               require(step.placement() != null && PlacementPlanner.lookMatchesSupport(step.placement(), pose.add(0, 1.62, 0),
+                  4.5, yaw, pitch, world), "Andromida places only against the actual transmitted voxel face");
+               require(!world.playerBox.intersects(new AABB(step.placement().target())), "startup/roof blocks never intersect the player");
+               require(world.solid.add(step.placement().target()), "one accepted placement never duplicates an existing block");
+               startupPlaced |= step.phase() == AndromidaBridge.Phase.STARTUP;
+               bridge.placed(); yaw = heading; pitch = 15;
+            }
+            boolean jumpNow = bridge.jump(tick, !jumped, true, Math.abs(net.minecraft.util.Mth.wrapDegrees(yaw-heading))<1,
+               true, pose, heading, world);
+            if (jumpNow) { jumped = true; takeoff = tick; }
+            roofBuilt = world.solid.contains(new BlockPos(0, 3, 0));
+         }
+         require(startupPlaced && jumped && roofBuilt, "Andromida bootstraps a real ceiling using a pillar and native takeoff: " + heading);
+
+         // Extend the roof after moving beyond its exposed edge, while floor
+         // extension is out of view until the next edge is reached.
+         feet = new Vec3(.5, 1, .5).add(forward.scale(1.05));
+         BlockPos roof = BlockPos.containing(feet).atY(3);
+         world.playerBox = new AABB(feet.x-.3, feet.y, feet.z-.3, feet.x+.3, feet.y+1.8, feet.z+.3);
+         boolean extended = false;
+         for (int tick = 40; tick < 50 && !extended; tick++) {
+            var step = bridge.plan(feet, feet.add(0,1.62,0), Vec3.ZERO, heading, 4.5, yaw, pitch, .5, true, world);
+            yaw = step.look().yaw(); pitch = step.look().pitch();
+            if (step.ready()) { world.solid.add(step.placement().target()); bridge.placed(); }
+            extended = world.solid.contains(roof);
+         }
+         require(extended, "Andromida extends the overhead row in every movement direction: " + heading);
+         require(!bridge.jump(60, false, true, true, false, feet, heading, world), "airborne Andromida cannot inject another jump");
+         require(!bridge.jump(61, true, false, true, false, feet, heading, world), "stationary Andromida does not jump");
+         require(!bridge.jump(62, true, true, false, false, feet, heading, world), "finish turning forward before a sprint takeoff");
+         require(bridge.jump(63, true, true, true, false, feet, heading, world), "a supported floor and low ceiling allow the native head-hitter jump");
+         require(!bridge.jump(64, true, true, true, false, feet, heading, world), "release jump between short ceiling landings");
+         world.solid.remove(BlockPos.containing(feet.add(forward.scale(.9))).atY(0));
+         require(!bridge.jump(66, true, true, true, false, feet, heading, world), "missing forward support prevents an automatic leap");
+         world.solid.add(BlockPos.containing(feet.add(forward.scale(.9))).atY(0));
+         world.solid.remove(BlockPos.containing(feet).atY(3));
+         world.solid.remove(BlockPos.containing(feet.subtract(forward.scale(.29))).atY(3));
+         require(!bridge.jump(67, true, true, true, true, feet, heading, world), "a lost ceiling cannot re-arm startup jumps after bridging begins");
+
+         // At the platform lip, a real side face becomes visible below the
+         // overhanging feet. Floor recovery must preempt ceiling construction.
+         feet = new Vec3(.5, 1, .5).add(forward.scale(2.55 / Math.max(Math.abs(forward.x), Math.abs(forward.z))));
+         world.playerBox = new AABB(feet.x-.3, feet.y, feet.z-.3, feet.x+.3, feet.y+1.8, feet.z+.3);
+         boolean floorExtended = false;
+         for (int tick = 70; tick < 80 && !floorExtended; tick++) {
+            var step = bridge.plan(feet, feet.add(0,1.62,0), Vec3.ZERO, heading, 4.5, yaw, pitch, .5, true, world);
+            yaw = step.look().yaw(); pitch = step.look().pitch();
+            if (step.ready()) {
+               require(step.phase() == AndromidaBridge.Phase.FLOOR && step.placement().target().getY() == 0,
+                  "an exposed floor gap takes priority over roof work");
+               require(PlacementPlanner.lookMatchesSupport(step.placement(), feet.add(0,1.62,0), 4.5, yaw, pitch, world),
+                  "edge extension uses a visible native support face");
+               floorExtended = world.solid.add(step.placement().target()); bridge.placed();
+            }
+         }
+         require(floorExtended, "Andromida extends its floor in every movement direction: " + heading);
+         bridge.reset();
+         require(bridge.layer(10) == 10, "world/mode reset clears the old ceiling height");
+      }
+   }
+
    private static void scaffoldStartupMovement() {
       Input forward = new Input(true, false, false, false, false, false, false);
       for (double sensitivity : new double[]{0, 0.5, 1}) {

@@ -138,7 +138,9 @@ public class KnockbackDisplace extends Module {
       KillauraRecode aura = OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
       Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
       BedNuker nuker = OyVey.moduleManager.getModuleByClass(BedNuker.class);
-      if (aura != null && aura.isEnabled() && aura.getTarget() != null
+      PvpBot pvpBot = OyVey.moduleManager.getModuleByClass(PvpBot.class);
+      if (pvpBot != null && pvpBot.isControlling()
+         || aura != null && aura.isEnabled() && aura.getTarget() != null
          || scaffold != null && scaffold.ownsRotation() || nuker != null && nuker.isEnabled()) return;
       // A click is handled before MOTION_PRE. Arm while the crosshair is on
       // the target so an ordinary tap can use the preceding native look.

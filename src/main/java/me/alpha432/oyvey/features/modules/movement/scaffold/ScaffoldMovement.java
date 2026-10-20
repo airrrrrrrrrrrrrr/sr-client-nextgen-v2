@@ -15,6 +15,16 @@ import net.minecraft.world.phys.Vec3;
 public final class ScaffoldMovement {
    private ScaffoldMovement() { }
 
+   /** Only the rotation planner uses this reference; it is never sent as player input. */
+   public static Input rotationKeys(Input held, boolean movementFix) {
+      return movementFix ? held : new Input(true, false, false, false, false, false, false);
+   }
+
+   public static Input rawDirections(Input raw, Input current) {
+      return new Input(raw.forward(), raw.backward(), raw.left(), raw.right(),
+         current.jump(), current.shift(), current.sprint());
+   }
+
    public static boolean forwardSprint(Input keys) {
       return keys.forward() && !keys.backward() && !keys.shift();
    }

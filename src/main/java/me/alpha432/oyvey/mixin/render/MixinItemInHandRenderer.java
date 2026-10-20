@@ -9,7 +9,7 @@ import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.ItemInHandRenderer;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.core.component.DataComponents;
-import net.minecraft.tags.ItemTags;
+import me.alpha432.oyvey.util.CombatItems;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.LivingEntity;
@@ -43,7 +43,7 @@ public abstract class MixinItemInHandRenderer {
       float swingProgress, ItemStack item, float equipProgress, PoseStack matrices,
       SubmitNodeCollector collector, int light, CallbackInfo ci
    ) {
-      if (hand != InteractionHand.MAIN_HAND || !item.is(ItemTags.SWORDS) || player.isScoping()
+      if (hand != InteractionHand.MAIN_HAND || !CombatItems.isSword(item) || player.isScoping()
          || OyVey.moduleManager == null) {
          return;
       }
@@ -165,7 +165,7 @@ public abstract class MixinItemInHandRenderer {
       CallbackInfo ci
    ) {
       AnimationsModule anim = AnimationsModule.INSTANCE;
-      if (item != null && anim != null && anim.isEnabled() && item.is(ItemTags.SWORDS)) {
+      if (item != null && anim != null && anim.isEnabled() && CombatItems.isSword(item)) {
          HumanoidArm arm = hand == InteractionHand.MAIN_HAND ? player.getMainArm() : player.getMainArm().getOpposite();
          AnimationsModule.transformBlockAnimation(matrices, arm, equipProgress, swingProgress);
       }

@@ -112,6 +112,14 @@ tasks.register('killInsultsTest', JavaExec) {
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
 }
 
+def combatBotTest = tasks.register('combatBotTest', JavaExec) {
+    dependsOn tasks.named('menuRegressionClasses')
+    classpath = sourceSets.menuRegression.runtimeClasspath
+    mainClass = 'me.alpha432.oyvey.util.CombatBotChecks'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+}
+tasks.named('check') { dependsOn combatBotTest }
+
 // Optional local GPU validation; kept out of headless/CI builds.
 tasks.register('targetEspTest', JavaExec) {
     dependsOn tasks.named('fontRegressionClasses')

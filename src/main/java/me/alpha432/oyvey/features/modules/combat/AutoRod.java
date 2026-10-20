@@ -5,6 +5,7 @@ import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.util.RodLogic;
+import me.alpha432.oyvey.util.ViaProtocol;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.InteractionHand;
@@ -27,6 +28,7 @@ public final class AutoRod extends Module {
    private int rodSlot = -1, restoreSlot = -1, motionTarget = -1, motionTick = -1, castHurtTime;
    private Vec3 filteredMotion = Vec3.ZERO;
    private RodLogic.Shot shot;
+   private RodLogic.Flight flight = RodLogic.Flight.MODERN;
 
    public AutoRod() { super("AutoRod", "Uses a predicted rod opener and returns to melee as the target closes", Category.COMBAT); }
    @Override public void onEnable() { abort(); }
@@ -50,6 +52,7 @@ public final class AutoRod extends Module {
       if (!isEnabled()) return;
       if (!sessionValid()) { abort(); return; }
       if (owner == null) { owner = mc.player; level = mc.level; }
+      flight = ViaProtocol.usesSwordBlocking() ? RodLogic.Flight.LEGACY : RodLogic.Flight.MODERN;
       checkManualSlot();
       int tick = mc.player.tickCount;
       if (!(target instanceof LivingEntity living) || target == mc.player || !target.isAlive() || target.isRemoved()
@@ -73,7 +76,7 @@ public final class AutoRod extends Module {
          cycle.begin(target.getId(), tick);
       }
       shot = cycle.phase() == RodLogic.Phase.AIMING
-         ? RodLogic.solve(mc.player.getEyePosition(), target.getBoundingBox(), filteredMotion, prediction.getValue()) : null;
+         ? RodLogic.solve(mc.player.getEyePosition(), target.getBoundingBox(), filteredMotion, prediction.getValue(), flight) : null;
    }
 
    private void updateMotion(Entity target) {
@@ -84,7 +87,14 @@ public final class AutoRod extends Module {
    }
 
    public Vec3 aimPoint(Entity target) {
-      return isEnabled() && cycle.phase() == RodLogic.Phase.AIMING && shot != null && target != null && target.getId() == cycle.target() ? shot.point() : null;
+      if (!aimingAt(target) || nullCheck()) return null;
+      // Recalculate from the post-movement eye position as well as at targeting.
+      shot = RodLogic.solve(mc.player.getEyePosition(), target.getBoundingBox(), filteredMotion, prediction.getValue(), flight);
+      return shot.point();
+   }
+   public boolean aimingAt(Entity target) {
+      return isEnabled() && cycle.phase() == RodLogic.Phase.AIMING && shot != null
+         && target != null && target.getId() == cycle.target();
    }
    public boolean active() { return isEnabled() && cycle.active(); }
    public boolean blocksMelee() { return isEnabled() && cycle.blocksMelee(); }
@@ -100,9 +110,9 @@ public final class AutoRod extends Module {
          return;
       }
       if (cycle.phase() != RodLogic.Phase.AIMING || !sentForTarget || target == null || target.getId() != cycle.target() || shot == null) return;
-      if (mc.player.fishing != null) { cycle.finish(mc.player.tickCount, delayTicks()); return; }
+      if (mc.player.fishing != null) { restoreOwnedSlot(); shot = null; cycle.finish(mc.player.tickCount, delayTicks()); return; }
       Vec3 motion = prediction.getValue() ? filteredMotion : Vec3.ZERO;
-      int intercept = RodLogic.intercept(mc.player.getEyePosition(), sentYaw, sentPitch, target.getBoundingBox(), motion, this::clearPath);
+      int intercept = RodLogic.intercept(mc.player.getEyePosition(), sentYaw, sentPitch, target.getBoundingBox(), motion, flight, this::clearPath);
       if (intercept < 0) return;
       int slot = findRod();
       if (slot < 0 || mc.player.getCooldowns().isOnCooldown(mc.player.getInventory().getItem(slot)) || mc.player.isUsingItem()) return;

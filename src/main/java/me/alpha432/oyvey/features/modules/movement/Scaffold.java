@@ -1,6 +1,8 @@
 package me.alpha432.oyvey.features.modules.movement;
 
 import java.awt.Color;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.event.Stage;
 import me.alpha432.oyvey.event.impl.entity.player.UpdateWalkingPlayerEvent;
@@ -17,6 +19,7 @@ import me.alpha432.oyvey.features.modules.movement.scaffold.BackwardBridgeRotati
 import me.alpha432.oyvey.features.modules.movement.scaffold.TellyBridge;
 import me.alpha432.oyvey.features.modules.movement.scaffold.Telly2Bridge;
 import me.alpha432.oyvey.features.modules.movement.scaffold.OneTickBridgeRotation;
+import me.alpha432.oyvey.features.modules.movement.scaffold.ShortRotationPulse;
 import me.alpha432.oyvey.features.modules.movement.scaffold.GodBridge;
 import me.alpha432.oyvey.features.modules.movement.scaffold.PlacementClickRate;
 import me.alpha432.oyvey.features.settings.Setting;
@@ -26,6 +29,7 @@ import me.alpha432.oyvey.util.SilentRotationMath;
 import me.alpha432.oyvey.util.ViaProtocol;
 import me.alpha432.oyvey.util.render.RenderUtil;
 import net.minecraft.client.player.ClientInput;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
@@ -46,6 +50,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import me.alpha432.oyvey.features.modules.movement.scaffold.AndromidaBridge;
 
 public class Scaffold extends Module {
    public static volatile boolean isRotating;
@@ -54,13 +59,15 @@ public class Scaffold extends Module {
    public final Setting<Mode> mode = this.register(new Setting<>("Mode", Mode.NORMAL));
    public final Setting<RotationMode> rotation = this.register(new Setting<RotationMode>("Rotation", RotationMode.BACKWARDS) {
       @Override public String currentEnumName() {
-         return this.getValue() == RotationMode.ONE_TICK ? "One Tick" : super.currentEnumName();
+         return this.getValue() == RotationMode.ONE_TICK ? "One Tick" : this.getValue() == RotationMode.TENTH_TICK ? "0.1 Tick" : super.currentEnumName();
       }
    });
    public final Setting<Boolean> autoSwitch = this.bool("AutoSwitch", true);
    public final Setting<Boolean> restoreSlot = this.bool("RestoreSlot", true);
    public final Setting<Boolean> keepY = this.bool("KeepY", false);
    public final Setting<Boolean> sprint = this.bool("Sprint", false);
+   public final Setting<Boolean> movementFix = this.register(new Setting<>("MovementFix", true,
+      "Remap WASD to preserve camera-relative movement while Scaffold rotates."));
    public final Setting<Boolean> thirdPerson = this.bool("ThirdPerson", false);
    public final Setting<Integer> placeDelay = this.num("PlaceDelay", 0, 0, 10);
    public final Setting<Boolean> randomCps = this.bool("RandomCPS", false);
@@ -83,13 +90,25 @@ public class Scaffold extends Module {
    private final TellyBridge telly = new TellyBridge();
    private final Telly2Bridge telly2 = new Telly2Bridge();
    private final OneTickBridgeRotation oneTick = new OneTickBridgeRotation();
+   private final ShortRotationPulse shortRotationPulse = new ShortRotationPulse();
+   private LocalPlayer shortPulseOwner;
+   private ClientLevel shortPulseLevel;
+   private float shortReturnYaw, shortReturnPitch;
    private final GodBridge godbridge = new GodBridge();
+   private final AndromidaBridge andromida = new AndromidaBridge();
+   private boolean andromidaJump;
+   private AndromidaBridge.Phase andromidaPhase = AndromidaBridge.Phase.TRAVEL;
    private final PlacementClickRate clickRate = new PlacementClickRate();
    private boolean godbridgeJump;
    private boolean oneTickAiming, oneTickReturnAfterAttempt;
    private TellyBridge.Step tellyStep;
    private Mode lastMode;
    private RotationMode lastRotationMode;
+   private boolean lastMovementFix;
+   private ClientInput rawInputOwner;
+   private Input rawInputKeys;
+   private net.minecraft.world.phys.Vec2 rawInputVector;
+   private int rawInputTick = Integer.MIN_VALUE;
    private RotationMode activeRotationMode = RotationMode.BACKWARDS;
    private ClientLevel trackedLevel;
    private volatile float sentYaw, sentPitch;
@@ -109,15 +128,15 @@ public class Scaffold extends Module {
 
    public Scaffold() {
       super("Scaffold", "Places hotbar blocks beneath your feet using visible support faces.", Category.MOVEMENT);
-      this.sprint.setVisibility(value -> !this.isTellyMode() && this.mode.getValue() != Mode.GODBRIDGE);
-      this.keepY.setVisibility(value -> this.mode.getValue() != Mode.TELLY2 && this.mode.getValue() != Mode.GODBRIDGE);
-      this.rotation.setVisibility(value -> this.mode.getValue() != Mode.GODBRIDGE);
+      this.sprint.setVisibility(value -> !this.isTellyMode() && this.mode.getValue() != Mode.GODBRIDGE && this.mode.getValue() != Mode.ANDROMIDA);
+      this.keepY.setVisibility(value -> this.mode.getValue() != Mode.TELLY2 && this.mode.getValue() != Mode.GODBRIDGE && this.mode.getValue() != Mode.ANDROMIDA);
+      this.rotation.setVisibility(value -> this.mode.getValue() != Mode.GODBRIDGE && this.mode.getValue() != Mode.ANDROMIDA);
    }
 
    @Override
    public void onEnable() {
       this.clickRate.reset();
-      this.godbridge.reset(); this.godbridgeJump = false;
+      this.godbridge.reset(); this.andromida.reset(); this.andromidaJump = false; this.godbridgeJump = false;
       this.pending = null;
       this.clutchTarget = null;
       this.clutchRecovery = false;
@@ -129,10 +148,11 @@ public class Scaffold extends Module {
       this.headPose.clear();
       this.bridgeRotation.reset();
       this.telly.reset(); this.telly2.reset();
-      this.oneTick.reset();
+      this.oneTick.reset(); this.clearShortPulse();
       this.tellyStep = null;
       this.lastMode = this.mode.getValue();
       this.lastRotationMode = this.rotation.getValue();
+      this.lastMovementFix = this.movementFix.getValue();
       this.activeRotationMode = this.lastRotationMode;
       this.hasSentRotation = false;
       this.sprintAllowed = false;
@@ -149,9 +169,10 @@ public class Scaffold extends Module {
 
    @Override
    public void onDisable() {
+      this.finishShortPulse(this.shortRotationPulse.ticket(), true);
       this.clickRate.reset();
-      this.godbridge.reset(); this.godbridgeJump = false;
-      this.oneTick.reset();
+      this.godbridge.reset(); this.andromida.reset(); this.andromidaJump = false; this.godbridgeJump = false;
+      this.oneTick.reset(); this.clearShortPulse();
       this.clutchTarget = null;
       this.clutchRecovery = false;
       this.restoreCamera();
@@ -173,16 +194,19 @@ public class Scaffold extends Module {
    @Subscribe(priority = 100)
    public void onWalking(UpdateWalkingPlayerEvent event) {
       if (event.getStage() == Stage.MOTION_PRE) {
+         this.finishShortPulse(this.shortRotationPulse.ticket(), true);
          this.syncThirdPerson();
          this.preparePlacement();
          this.prepareClutchRecovery();
          this.placePending();
+         this.finishAndromidaPlacement();
          this.completeTellyCorner();
          this.updateGodbridgeJump();
          this.returnOneTickAfterAttempt();
          this.recoverTellyAfterPlacement();
          this.advanceClutchAfterPlacement();
          this.advanceCenterAfterPlacement();
+         this.updateAndromidaJump();
          this.tracePlacement();
       } else if (event.getStage() == Stage.PRE && this.injectedRotation) {
          // Physics has finished. Only pitch changes here; the backward yaw that
@@ -212,20 +236,23 @@ public class Scaffold extends Module {
       this.placementStatus = "inactive";
       this.sprintAllowed = false;
       this.godbridgeJump = false;
+      this.andromidaJump = false;
       this.tellyStep = null;
       this.syncWorld();
-      if (this.lastMode != this.mode.getValue() || this.lastRotationMode != this.rotation.getValue()) {
+      if (this.lastMode != this.mode.getValue() || this.lastRotationMode != this.rotation.getValue()
+         || this.lastMovementFix != this.movementFix.getValue()) {
          this.lastMode = this.mode.getValue();
          this.lastRotationMode = this.rotation.getValue();
-         this.godbridge.reset();
+         this.lastMovementFix = this.movementFix.getValue();
+         this.godbridge.reset(); this.andromida.reset(); this.andromidaJump = false;
          this.telly.reset(); this.telly2.reset();
-         this.oneTick.reset();
+         this.oneTick.reset(); this.clearShortPulse();
          this.bridgeRotation.reset();
          this.rotationPrimed = false;
          this.centerTarget = null;
       }
       if (nullCheck() || mc.gameMode == null || mc.screen != null || mc.player.isSpectator()
-         || mc.player.isPassenger() || mc.player.isUsingItem()) { this.clickRate.reset(); this.telly.reset(); this.telly2.reset(); this.oneTick.reset(); this.godbridge.reset(); return; }
+         || mc.player.isPassenger() || mc.player.isUsingItem()) { this.clickRate.reset(); this.telly.reset(); this.telly2.reset(); this.oneTick.reset(); this.clearShortPulse(); this.godbridge.reset(); this.andromida.reset(); this.andromidaJump = false; return; }
       if (mc.player.tickCount < this.resumeAfterCorrectionTick) { this.placementStatus = "reconciling"; return; }
       if (this.startSlot < 0) {
          this.startSlot = mc.player.getInventory().getSelectedSlot();
@@ -233,15 +260,16 @@ public class Scaffold extends Module {
       }
       int layer = this.placementLayer();
       // A locked bridge layer must never intersect the player after dropping below it.
-      if (layer + 1 > mc.player.getY() + 0.001) { this.telly.reset(); this.telly2.reset(); this.oneTick.reset(); return; }
-      if (!this.selectBlocks()) { this.telly.reset(); this.telly2.reset(); this.oneTick.reset(); return; }
+      if (layer + 1 > mc.player.getY() + 0.001) { this.telly.reset(); this.telly2.reset(); this.oneTick.reset(); this.clearShortPulse(); return; }
+      if (!this.selectBlocks()) { this.telly.reset(); this.telly2.reset(); this.oneTick.reset(); this.clearShortPulse(); return; }
       visualYaw = mc.player.getYRot();
       visualPitch = mc.player.getXRot();
       // Read camera-space keys, not the previous tick's corrected WASD state.
       Input keys = new Input(mc.options.keyUp.isDown(), mc.options.keyDown.isDown(),
          mc.options.keyLeft.isDown(), mc.options.keyRight.isDown(), false, false, false);
       this.diagonalMovement = ScaffoldMovement.diagonalBridge(keys, visualYaw);
-      RotationMode active = this.mode.getValue() == Mode.GODBRIDGE ? RotationMode.BACKWARDS
+      RotationMode active = this.mode.getValue() == Mode.ANDROMIDA ? RotationMode.CENTER
+         : this.mode.getValue() == Mode.GODBRIDGE ? RotationMode.BACKWARDS
          : this.rotation.getValue() == RotationMode.CENTER && this.diagonalMovement
          ? RotationMode.BACKWARDS : this.rotation.getValue();
       if (active != this.activeRotationMode) {
@@ -251,11 +279,12 @@ public class Scaffold extends Module {
          this.centerTarget = null;
       }
       if (this.mode.getValue() == Mode.GODBRIDGE) { this.prepareGodbridge(keys,layer); return; }
+      if (this.mode.getValue() == Mode.ANDROMIDA) { this.prepareAndromida(keys); return; }
       if (this.isTellyMode()) {
          this.prepareTelly(keys);
          return;
       }
-      if (active == RotationMode.ONE_TICK) { this.prepareOneTick(keys); return; }
+      if (this.isPulseRotation()) { this.preparePulseRotation(keys); return; }
       var candidates = this.catchTargets(layer);
       var transmittedPlacement = this.transmittedPlacement(candidates);
       SilentRotationMath.Rotation rotation;
@@ -265,13 +294,13 @@ public class Scaffold extends Module {
          this.centerTarget = aim == null ? null : aim.placement();
          this.rotationPrimed = aim != null;
       } else {
-         var backwardLook = this.bridgeRotation.next(keys, visualYaw, this.sentYaw, this.sentPitch, 82, mc.options.sensitivity().get());
+         var backwardLook = this.bridgeRotation.next(this.rotationKeys(keys), visualYaw, this.sentYaw, this.sentPitch, 82, mc.options.sensitivity().get());
          float desiredPitch = PlacementPlanner.backwardPitch(candidates, mc.player.getEyePosition(),
             mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE), backwardLook.yaw(), this.sentPitch,
             mc.options.sensitivity().get(), this.world());
-         rotation = this.bridgeRotation.next(keys, visualYaw,
+         rotation = this.bridgeRotation.next(this.rotationKeys(keys), visualYaw,
             this.sentYaw, this.sentPitch, desiredPitch, mc.options.sensitivity().get());
-         this.rotationPrimed |= Math.abs(Mth.wrapDegrees(this.bridgeRotation.heading(keys, visualYaw) - rotation.yaw())) < 1
+         this.rotationPrimed |= Math.abs(Mth.wrapDegrees(this.bridgeRotation.heading(this.rotationKeys(keys), visualYaw) - rotation.yaw())) < 1
             && rotation.pitch() >= 70;
       }
       if (transmittedPlacement != null && this.hasSentRotation && this.rotationPrimed) {
@@ -307,7 +336,7 @@ public class Scaffold extends Module {
 
    private void prepareGodbridge(Input keys, int layer) {
       var candidates = this.catchTargets(layer);
-      float heading = GodBridge.aimYaw(keys,visualYaw);
+      float heading = GodBridge.aimYaw(this.rotationKeys(keys),visualYaw);
       var turn = TellyBridge.turn(this.sentYaw,this.sentPitch,heading,75.5F,mc.options.sensitivity().get());
       float pitch = PlacementPlanner.backwardPitch(candidates,mc.player.getEyePosition(),
          mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE),turn.yaw(),this.sentPitch,
@@ -320,10 +349,43 @@ public class Scaffold extends Module {
       this.placementStatus = this.pending == null ? "godbridge-align" : "godbridge-place";
    }
 
+   private void prepareAndromida(Input keys) {
+      if (!TellyBridge.moving(keys) || mc.options.keyShift.isDown() || mc.player.isInWater() || mc.player.isInLava()
+         || mc.player.onClimbable() || mc.player.isFallFlying() || mc.player.getAbilities().flying) {
+         this.andromida.reset(); return;
+      }
+      var step = this.andromida.plan(mc.player.position(), mc.player.getEyePosition(), mc.player.getDeltaMovement(),
+         this.rotationHeading(keys), mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE),
+         this.sentYaw, this.sentPitch, mc.options.sensitivity().get(), this.hasSentRotation, this.world());
+      this.andromidaPhase = step.phase();
+      this.centerTarget = step.placement();
+      this.pending = step.ready() ? step.placement() : null;
+      this.injectedRotation = this.rotationPrimed = isRotating = true;
+      this.applyOneTickLook(step.look());
+      this.placementStatus = "andromida-" + step.phase().name().toLowerCase();
+   }
+
+   private void finishAndromidaPlacement() {
+      if (this.mode.getValue() != Mode.ANDROMIDA || !this.placedThisTick || !this.injectedRotation) return;
+      this.andromida.placed(); this.pending = this.centerTarget = null;
+      this.applyOneTickLook(TellyBridge.turn(this.sentYaw, this.sentPitch, this.rotationHeading(this.heldTellyMovement()),
+         15, mc.options.sensitivity().get()));
+   }
+
+   private void updateAndromidaJump() {
+      if (this.mode.getValue() != Mode.ANDROMIDA || !this.ownsRotation() || nullCheck()) return;
+      Input keys = this.heldTellyMovement();
+      float heading = this.rotationHeading(keys);
+      boolean aligned = Math.abs(Mth.wrapDegrees(heading - this.rotationYaw)) < 1;
+      boolean headroom = mc.level.noCollision(mc.player, mc.player.getBoundingBox().move(0, 0.42, 0));
+      this.andromidaJump = !mc.options.keyShift.isDown() && this.andromida.jump(mc.player.tickCount,
+         mc.player.onGround(), TellyBridge.moving(keys), aligned, headroom, mc.player.position(), heading, this.world());
+   }
+
    private void updateGodbridgeJump() {
       if (this.mode.getValue()!=Mode.GODBRIDGE || !this.injectedRotation || nullCheck()) return;
       Input keys=this.heldTellyMovement();
-      boolean aligned=this.hasSentRotation && Math.abs(Mth.wrapDegrees(GodBridge.heading(keys,visualYaw)-this.sentYaw))<1;
+      boolean aligned=this.hasSentRotation && Math.abs(Mth.wrapDegrees(GodBridge.heading(this.rotationKeys(keys),visualYaw)-this.sentYaw))<1;
       boolean headroom=!mc.options.keyShift.isDown() && !mc.player.isInWater() && !mc.player.isInLava()
          && !mc.player.onClimbable() && !mc.player.isFallFlying() && !mc.player.getAbilities().flying
          && mc.level.noCollision(mc.player,mc.player.getBoundingBox().move(0,.42,0));
@@ -339,7 +401,9 @@ public class Scaffold extends Module {
 
    private void refreshPlacement() {
       if (nullCheck()) return;
-      if (this.activeRotationMode == RotationMode.ONE_TICK) {
+      if (this.mode.getValue() == Mode.ANDROMIDA && this.centerTarget == null) return;
+      if (this.activeRotationMode == RotationMode.TENTH_TICK) return;
+      if (this.isPulseRotation()) {
          var actual = this.oneTick.refine(mc.player.getEyePosition(),
             mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE), this.rotationYaw, this.rotationPitch,
             mc.options.sensitivity().get(), this.world());
@@ -364,7 +428,7 @@ public class Scaffold extends Module {
          return;
       }
       int layer = this.placementLayer();
-      var candidates = this.catchTargets(layer);
+      var candidates = this.mode.getValue() == Mode.ANDROMIDA ? java.util.List.of(this.centerTarget.target()) : this.catchTargets(layer);
       if (this.activeRotationMode == RotationMode.CENTER) {
          var aim = PlacementPlanner.centerAim(candidates, mc.player.getEyePosition(),
             mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE), this.rotationYaw, this.rotationPitch,
@@ -406,12 +470,12 @@ public class Scaffold extends Module {
       if ((!TellyBridge.moving(keys) && !manualJump) || mc.options.keyShift.isDown() || mc.player.isInWater() || mc.player.isInLava()
          || mc.player.isFallFlying() || mc.player.getAbilities().flying || mc.player.onClimbable()) {
          this.telly.reset(); this.telly2.reset();
-         this.oneTick.reset();
+         this.oneTick.reset(); this.clearShortPulse();
          return;
       }
-      float forwardYaw = TellyBridge.forwardYaw(keys, visualYaw);
+      float forwardYaw = this.rotationHeading(keys);
       float backwardYaw = forwardYaw + TellyBridge.BACKWARD_OFFSET;
-      boolean backwardReady = this.activeRotationMode == RotationMode.ONE_TICK || this.hasSentRotation && (this.activeRotationMode == RotationMode.CENTER
+      boolean backwardReady = this.isPulseRotation() || this.hasSentRotation && (this.activeRotationMode == RotationMode.CENTER
          ? this.rotationPrimed : Math.abs(Mth.wrapDegrees(backwardYaw - this.sentYaw)) < 1 && this.sentPitch >= 45);
       boolean forwardReady = this.hasSentRotation && Math.abs(Mth.wrapDegrees(forwardYaw - this.sentYaw)) < 1;
       AABB feet = mc.player.getBoundingBox();
@@ -426,7 +490,7 @@ public class Scaffold extends Module {
          ? this.telly2.update(mc.player.onGround(), mc.player.getDeltaMovement().y, footLayer, headroom, landingReady)
          : this.telly.update(mc.player.onGround(), mc.player.getDeltaMovement().y,
             footLayer, backwardReady, forwardReady, headroom, climb, landingReady);
-      if (this.activeRotationMode == RotationMode.ONE_TICK) { this.prepareOneTick(keys); return; }
+      if (this.isPulseRotation()) { this.preparePulseRotation(keys); return; }
       int layer = this.placementLayer();
       var candidates = this.catchTargets(layer);
       boolean forward = this.tellyStep.lookForward();
@@ -464,8 +528,8 @@ public class Scaffold extends Module {
    }
 
    private void prepareClutchRecovery() {
-      if (this.mode.getValue()==Mode.GODBRIDGE) return;
-      if (this.activeRotationMode == RotationMode.ONE_TICK) return;
+      if (this.mode.getValue()==Mode.GODBRIDGE || this.mode.getValue()==Mode.ANDROMIDA) return;
+      if (this.isPulseRotation()) return;
       if (nullCheck() || mc.gameMode == null || mc.screen != null
          || mc.player.isSpectator() || mc.player.isPassenger()
          || mc.player.isUsingItem() || mc.player.isInWater() || mc.player.isInLava()
@@ -546,6 +610,7 @@ public class Scaffold extends Module {
    }
 
    private void advanceCenterAfterPlacement() {
+      if (this.mode.getValue() == Mode.ANDROMIDA) return;
       if (!this.placedThisTick || this.activeRotationMode != RotationMode.CENTER || this.clutchRecovery
          || this.isTellyMode() && this.tellyStep != null && this.tellyStep.lookForward()) return;
       var aim = this.centerAim(this.catchTargets(this.placementLayer()));
@@ -566,6 +631,7 @@ public class Scaffold extends Module {
    }
 
    private int placementLayer() {
+      if (this.mode.getValue() == Mode.ANDROMIDA) return this.andromida.layer(PlacementPlanner.blockLayer(mc.player.getY()));
       if (this.mode.getValue() == Mode.GODBRIDGE) {
          return this.godbridge.placementLayer(PlacementPlanner.blockLayer(mc.player.getY()), mc.player.onGround());
       }
@@ -583,8 +649,70 @@ public class Scaffold extends Module {
    private boolean keepLayer() { return this.mode.getValue()==Mode.GODBRIDGE || this.mode.getValue() != Mode.TELLY2 && this.keepY.getValue(); }
 
    private SilentRotationMath.Rotation oneTickTravel(Input keys) {
-      return TellyBridge.turn(this.sentYaw, this.sentPitch, TellyBridge.forwardYaw(keys, visualYaw),
+      return TellyBridge.turn(this.sentYaw, this.sentPitch, this.rotationHeading(keys),
          this.isTellyMode() ? 15 : visualPitch, mc.options.sensitivity().get());
+   }
+
+   private void preparePulseRotation(Input keys) {
+      if (this.activeRotationMode == RotationMode.TENTH_TICK) this.prepareShortPulse(keys);
+      else this.prepareOneTick(keys);
+   }
+
+   private void prepareShortPulse(Input keys) {
+      var travel = this.oneTickTravel(keys);
+      boolean takeoff = this.isTellyMode() && this.tellyStep != null && this.tellyStep.jump();
+      boolean landing = this.isTellyMode() && this.hasTellyForwardLanding();
+      boolean ready = !takeoff && !landing && mc.player.tickCount - this.lastPlaceTick >= this.placeDelay.getValue()
+         && this.clickRate.readyWithin(System.nanoTime(),0,this.cps.getValue(),this.randomCps.getValue(),
+            this.minCps.getValue(),this.maxCps.getValue());
+      var aim = ready ? PlacementPlanner.centerAim(this.catchTargets(this.placementLayer()),mc.player.getEyePosition(),
+         mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE),this.sentYaw,this.sentPitch,
+         mc.options.sensitivity().get(),this.world(),null,false) : null;
+      this.pending = aim == null ? null : aim.placement();
+      this.oneTickAiming = aim != null;
+      this.oneTickReturnAfterAttempt = false;
+      this.injectedRotation = this.rotationPrimed = isRotating = true;
+      this.applyOneTickLook(aim == null ? travel : aim.rotation());
+      this.placementStatus = aim == null ? "0.1-tick-travel" : "0.1-tick-aim";
+      if (aim == null) return;
+      this.shortPulseOwner = mc.player; this.shortPulseLevel = mc.level;
+      this.shortReturnYaw = travel.yaw(); this.shortReturnPitch = travel.pitch();
+      long ticket = this.shortRotationPulse.start(System.nanoTime());
+      if (!this.sendShortLook(this.rotationYaw,this.rotationPitch)) {
+         this.finishShortPulse(ticket,true);
+         this.pending = null; this.oneTickAiming = false;
+         this.applyOneTickLook(travel);
+         this.placementStatus = "0.1-tick-look-cancelled";
+         return;
+      }
+      // Only the wakeup runs off-thread. Every player read, placement and
+      // return packet executes on Minecraft's client thread.
+      long delay = this.shortRotationPulse.remaining(ticket,System.nanoTime());
+      CompletableFuture.delayedExecutor(delay,TimeUnit.NANOSECONDS).execute(
+         () -> mc.execute(() -> this.finishShortPulse(ticket,false)));
+   }
+
+   private boolean sendShortLook(float yaw, float pitch) {
+      this.hasSentRotation = false;
+      mc.player.connection.send(new ServerboundMovePlayerPacket.Rot(yaw,pitch,
+         mc.player.onGround(),mc.player.horizontalCollision));
+      return this.hasSentRotation && Math.abs(Mth.wrapDegrees(this.sentYaw-yaw)) < .001F
+         && Math.abs(this.sentPitch-pitch) < .001F;
+   }
+
+   private void finishShortPulse(long ticket, boolean force) {
+      if (!this.shortRotationPulse.finish(ticket,System.nanoTime(),force)) return;
+      boolean sameWorld = this.shortPulseOwner == mc.player && this.shortPulseLevel == mc.level;
+      this.shortPulseOwner = null; this.shortPulseLevel = null;
+      if (sameWorld && mc.player != null && mc.player.connection != null)
+         this.sendShortLook(this.shortReturnYaw,this.shortReturnPitch);
+      this.oneTickAiming = false;
+      this.headPose.clear();
+   }
+
+   private void clearShortPulse() {
+      this.shortRotationPulse.clear();
+      this.shortPulseOwner = null; this.shortPulseLevel = null;
    }
 
    private void prepareOneTick(Input keys) {
@@ -593,7 +721,7 @@ public class Scaffold extends Module {
       boolean takeoff = this.isTellyMode() && this.tellyStep != null && this.tellyStep.jump();
       boolean landing = this.isTellyMode() ? this.hasTellyForwardLanding()
          : PlacementPlanner.hasForwardLanding(mc.player.position(), motion, this.placementLayer(),
-            mc.player.getAttributeValue(Attributes.GRAVITY), TellyBridge.forwardYaw(keys, visualYaw), TellyBridge.moving(keys), this.world());
+            mc.player.getAttributeValue(Attributes.GRAVITY), this.movementHeading(keys), TellyBridge.moving(keys), this.world());
       var liveWorld = this.world();
       boolean climb = this.climbingTelly();
       Vec3 aimFeet = climb ? mc.player.position().add(nextStep) : mc.player.position();
@@ -625,14 +753,17 @@ public class Scaffold extends Module {
 
    private void applyOneTickLook(SilentRotationMath.Rotation look) {
       this.rotationYaw = look.yaw(); this.rotationPitch = look.pitch();
-      this.headPose.aim(this.rotationYaw, this.rotationPitch, visualYaw, visualPitch);
+      boolean shortAim = this.activeRotationMode == RotationMode.TENTH_TICK && this.oneTickAiming;
+      if (shortAim) this.headPose.clear();
+      this.headPose.aim(this.rotationYaw, this.rotationPitch,
+         shortAim ? this.rotationYaw : visualYaw, shortAim ? this.rotationPitch : visualPitch);
       OyVey.rotationManager.setPlayerRotations(this.rotationYaw, this.rotationPitch);
       OyVey.rotationManager.setServerRotations(this.rotationYaw, this.rotationPitch);
    }
 
    private Vec3 predictedPlacementStep() {
       Input keys = this.heldTellyMovement();
-      Vec3 direction = TellyBridge.moving(keys) ? Vec3.directionFromRotation(0, TellyBridge.forwardYaw(keys, visualYaw)) : Vec3.ZERO;
+      Vec3 direction = TellyBridge.moving(keys) ? Vec3.directionFromRotation(0, this.movementHeading(keys)) : Vec3.ZERO;
       double acceleration = .02;
       if (mc.player.onGround()) {
          float friction = mc.level.getBlockState(BlockPos.containing(mc.player.getX(), mc.player.getY()-.5, mc.player.getZ())).getBlock().getFriction();
@@ -647,9 +778,11 @@ public class Scaffold extends Module {
    }
 
    private void keepClickedSupportPitch() {
+      if (this.mode.getValue() == Mode.ANDROMIDA) return;
+      if (this.activeRotationMode == RotationMode.TENTH_TICK) return;
       if (!ViaProtocol.usesSwordBlocking()) return;
       if (!this.placedThisTick || this.clickedPlacement == null
-         || this.activeRotationMode != RotationMode.ONE_TICK && this.activeRotationMode != RotationMode.CENTER) return;
+         || !this.isPulseRotation() && this.activeRotationMode != RotationMode.CENTER) return;
       if (PlacementPlanner.lookIntersectsClickedSupport(this.clickedPlacement, mc.player.getEyePosition(),
          mc.player.getAttributeValue(Attributes.BLOCK_INTERACTION_RANGE), this.sentYaw, this.rotationPitch)) return;
       // Physics yaw is fixed here. Only pitch follows the actual post-movement
@@ -663,7 +796,7 @@ public class Scaffold extends Module {
 
    private Vec3 predictedFollowupStep(Vec3 firstStep) {
       Input keys=this.heldTellyMovement();
-      Vec3 direction=TellyBridge.moving(keys)?Vec3.directionFromRotation(0,TellyBridge.forwardYaw(keys,visualYaw)):Vec3.ZERO;
+      Vec3 direction=TellyBridge.moving(keys)?Vec3.directionFromRotation(0,this.movementHeading(keys)):Vec3.ZERO;
       boolean jumping=mc.player.onGround() && (this.isTellyMode()?this.tellyStep!=null&&this.tellyStep.jump():mc.options.keyJump.isDown());
       boolean grounded=mc.player.onGround()&&!jumping;
       double drag=.91, acceleration=.026;
@@ -684,7 +817,7 @@ public class Scaffold extends Module {
       this.pending = null;
       Input keys=this.heldTellyMovement();
       if (this.placedThisTick && !PlacementPlanner.hasForwardLanding(mc.player.position(),mc.player.getDeltaMovement(),
-         this.placementLayer(),mc.player.getAttributeValue(Attributes.GRAVITY),TellyBridge.forwardYaw(keys,visualYaw),
+         this.placementLayer(),mc.player.getAttributeValue(Attributes.GRAVITY),this.movementHeading(keys),
          TellyBridge.moving(keys),this.world())) {
          // Each prepared look still lasts one native movement tick. A block
          // that does not yet cover the landing must prepare the next catch
@@ -705,11 +838,11 @@ public class Scaffold extends Module {
    private boolean hasTellyForwardLanding() {
       Input keys = this.heldTellyMovement();
       return PlacementPlanner.hasForwardLanding(mc.player.position(), mc.player.getDeltaMovement(), this.placementLayer(),
-         mc.player.getAttributeValue(Attributes.GRAVITY), TellyBridge.forwardYaw(keys, visualYaw), TellyBridge.moving(keys), this.world());
+         mc.player.getAttributeValue(Attributes.GRAVITY), this.movementHeading(keys), TellyBridge.moving(keys), this.world());
    }
 
    private void recoverTellyAfterPlacement() {
-      if (this.activeRotationMode == RotationMode.ONE_TICK || !this.isTellyMode() || this.tellyStep == null || !this.placedThisTick || nullCheck()
+      if (this.isPulseRotation() || !this.isTellyMode() || this.tellyStep == null || !this.placedThisTick || nullCheck()
          || mc.player.onGround() || !this.hasTellyForwardLanding()) return;
       int layer = PlacementPlanner.blockLayer(mc.player.getY());
       var recovered = this.mode.getValue() == Mode.TELLY2 ? this.telly2.recoverForward(layer)
@@ -720,7 +853,7 @@ public class Scaffold extends Module {
       this.clutchTarget = this.centerTarget = null;
       this.clutchRecovery = false;
       Input keys = this.heldTellyMovement();
-      var look = TellyBridge.turn(this.sentYaw, this.sentPitch, TellyBridge.forwardYaw(keys, visualYaw), 15,
+      var look = TellyBridge.turn(this.sentYaw, this.sentPitch, this.rotationHeading(keys), 15,
          mc.options.sensitivity().get());
       this.rotationYaw = look.yaw(); this.rotationPitch = look.pitch();
       this.rotationPrimed = true;
@@ -733,6 +866,7 @@ public class Scaffold extends Module {
    }
 
    private void advanceClutchAfterPlacement() {
+      if (this.activeRotationMode == RotationMode.TENTH_TICK) return;
       if (!this.clutchRecovery || !this.placedThisTick || nullCheck()) return;
       Vec3 eyes = mc.player.getEyePosition(), motion = mc.player.getDeltaMovement();
       var targets = PlacementPlanner.catchTargets(mc.player.position(), motion,
@@ -753,12 +887,12 @@ public class Scaffold extends Module {
 
    private void completeTellyCorner() {
       if (this.singlePlacementTick()) return;
-      if (!this.placedThisTick || !this.cornerCatch() && this.activeRotationMode != RotationMode.ONE_TICK
-         || (this.activeRotationMode != RotationMode.BACKWARDS && this.activeRotationMode != RotationMode.ONE_TICK && !this.clutchRecovery)
+      if (!this.placedThisTick || !this.cornerCatch() && !this.isPulseRotation()
+         || (this.activeRotationMode != RotationMode.BACKWARDS && !this.isPulseRotation() && !this.clutchRecovery)
          || this.placeDelay.getValue() != 0) return;
       var targets = PlacementPlanner.centerTargets(mc.player.position(), mc.player.getDeltaMovement(), this.placementLayer(),
          !mc.player.onGround(), !this.keepLayer(), mc.player.getAttributeValue(Attributes.GRAVITY), this.world());
-      if ((this.clutchRecovery || this.activeRotationMode == RotationMode.ONE_TICK) && this.clickedPlacement != null) {
+      if ((this.clutchRecovery || this.isPulseRotation()) && this.clickedPlacement != null) {
          int catchLayer = this.clickedPlacement.target().getY();
          targets = targets.stream().filter(pos -> pos.getY() == catchLayer).toList();
       }
@@ -811,8 +945,8 @@ public class Scaffold extends Module {
    }
 
    private boolean singlePlacementTick() {
-      return this.mode.getValue() == Mode.GODBRIDGE
-         || this.activeRotationMode == RotationMode.ONE_TICK && this.climbingTelly();
+      return this.mode.getValue() == Mode.GODBRIDGE || this.mode.getValue() == Mode.ANDROMIDA || this.activeRotationMode == RotationMode.TENTH_TICK
+         || this.isPulseRotation() && this.climbingTelly();
    }
 
    private void tracePlacement() {
@@ -852,8 +986,8 @@ public class Scaffold extends Module {
          this.trackedLevel = mc.level;
          this.clickRate.reset();
          this.confirmations.clear();
-         this.godbridge.reset(); this.godbridgeJump=false;
-         this.oneTick.reset();
+         this.godbridge.reset(); this.andromida.reset(); this.andromidaJump = false; this.godbridgeJump=false;
+         this.oneTick.reset(); this.clearShortPulse();
          this.headPose.clear();
          this.bridgeRotation.reset();
          this.telly.reset(); this.telly2.reset();
@@ -904,8 +1038,8 @@ public class Scaffold extends Module {
    public void onServerCorrection() {
       if (!this.isEnabled() || mc.player == null) return;
       this.clickRate.reset();
-      this.godbridge.reset(); this.godbridgeJump=false;
-      this.oneTick.reset();
+      this.godbridge.reset(); this.andromida.reset(); this.andromidaJump = false; this.godbridgeJump=false;
+      this.oneTick.reset(); this.clearShortPulse();
       this.restoreRotation();
       this.headPose.clear();
       this.pending = null;
@@ -996,9 +1130,10 @@ public class Scaffold extends Module {
    }
 
    private boolean wantsSprint() {
+      if (this.mode.getValue() == Mode.ANDROMIDA) return true;
       if (this.mode.getValue()==Mode.GODBRIDGE) return false;
       return this.isTellyMode()
-         ? this.tellyStep != null && (this.activeRotationMode == RotationMode.ONE_TICK ? !this.oneTickAiming : this.tellyStep.lookForward()) : this.sprint.getValue();
+         ? this.tellyStep != null && (this.isPulseRotation() ? !this.oneTickAiming : this.tellyStep.lookForward()) : this.sprint.getValue();
    }
 
    private boolean allowsSprint(Input keys) {
@@ -1022,6 +1157,7 @@ public class Scaffold extends Module {
       // Telly2 rises automatically; Space selects upward building in Telly.
       // Native jump presses use the forward takeoff look, then release in air.
       boolean jump = controlsJump ? this.tellyStep.jump() && mc.player.onGround()
+         : this.mode.getValue() == Mode.ANDROMIDA ? this.andromidaJump
          : keys.jump() || this.mode.getValue()==Mode.GODBRIDGE && this.godbridgeJump;
       // Reassert the module's request after other modules process the keyboard;
       // no physical sprint binding is required for an eligible forward phase.
@@ -1035,7 +1171,9 @@ public class Scaffold extends Module {
    }
 
    public boolean hasSilentHeadPose() {
-      return this.isEnabled() && this.trackedLevel == mc.level && !nullCheck() && this.headPose.isActive();
+      return this.isEnabled() && this.trackedLevel == mc.level && !nullCheck() && this.headPose.isActive()
+         && (this.activeRotationMode != RotationMode.TENTH_TICK || !this.oneTickAiming
+            || this.shortRotationPulse.active());
    }
 
    public SilentHeadPose getSilentHeadPose() {
@@ -1045,7 +1183,7 @@ public class Scaffold extends Module {
    public void applyInput(ClientInput input) {
       if (!this.isEnabled() || mc.player == null) return;
       Input keys = input.keyPresses;
-      if (this.ownsRotation()) {
+      if (this.ownsRotation() && this.movementFix.getValue()) {
          // Both modes preserve held movement. Rotation correction only remaps
          // WASD; it never releases or reverses keys to wait for support.
          SilentRotationMath.Movement movement = SilentRotationMath.correctMovement(keys, visualYaw, this.rotationYaw);
@@ -1061,8 +1199,33 @@ public class Scaffold extends Module {
       this.enforceSprintInput(input);
    }
 
+   /** OFF keeps the exact native WASD snapshot, including its original diagonal vector. */
+   public void restoreUncorrectedInput(ClientInput input, Input original, net.minecraft.world.phys.Vec2 originalVector) {
+      if (!this.ownsRotation() || this.movementFix.getValue()) return;
+      input.keyPresses = ScaffoldMovement.rawDirections(original, input.keyPresses);
+      ((ClientInputAccessor)input).oyvey$setMoveVector(originalVector);
+   }
+
+   public void captureRawInput(ClientInput input, Input keys, net.minecraft.world.phys.Vec2 vector) {
+      this.rawInputOwner = input; this.rawInputKeys = keys; this.rawInputVector = vector;
+      this.rawInputTick = mc.player == null ? Integer.MIN_VALUE : mc.player.tickCount;
+   }
+
+   /** Runs at the native consumer, after every KeyboardInput RETURN hook. */
+   public void beforeNativeInput(ClientInput input) {
+      if (mc.player == null || input != this.rawInputOwner || this.rawInputTick != mc.player.tickCount) return;
+      this.restoreUncorrectedInput(input, this.rawInputKeys, this.rawInputVector);
+   }
+
+   private Input rotationKeys(Input keys) { return ScaffoldMovement.rotationKeys(keys, this.movementFix.getValue()); }
+   private float rotationHeading(Input keys) { return TellyBridge.forwardYaw(this.rotationKeys(keys), visualYaw); }
+   private float movementHeading(Input keys) {
+      return TellyBridge.forwardYaw(keys, this.movementFix.getValue() ? visualYaw : this.rotationYaw);
+   }
+
    @Override
    public String getDisplayInfo() {
+      if (this.mode.getValue() == Mode.ANDROMIDA) return "Andromida";
       if (this.mode.getValue()==Mode.GODBRIDGE) return "Godbridge";
       return this.isTellyMode() ? this.mode.getValue() == Mode.TELLY2 ? "Telly2" : "Telly" : null;
    }
@@ -1073,11 +1236,13 @@ public class Scaffold extends Module {
       // Recovery can be driven by momentum/knockback without held diagonal
       // keys. Let its native ray complete a connector in every travel direction.
       return this.mode.getValue()==Mode.GODBRIDGE || this.clutchRecovery
-         || this.diagonalMovement && (this.climbingTelly() || this.activeRotationMode == RotationMode.ONE_TICK);
+         || this.diagonalMovement && (this.climbingTelly() || this.isPulseRotation());
    }
 
-   public enum Mode { NORMAL, TELLY, TELLY2, GODBRIDGE }
-   public enum RotationMode { BACKWARDS, CENTER, ONE_TICK }
+   public enum Mode { NORMAL, TELLY, TELLY2, GODBRIDGE, ANDROMIDA }
+   private boolean isPulseRotation() { return this.activeRotationMode == RotationMode.ONE_TICK || this.activeRotationMode == RotationMode.TENTH_TICK; }
+
+   public enum RotationMode { BACKWARDS, CENTER, ONE_TICK, TENTH_TICK }
 
    @Override
    public void onRender2D(Render2DEvent event) {
@@ -1096,6 +1261,7 @@ public class Scaffold extends Module {
 
    @Override
    public void onRender3D(Render3DEvent event) {
+      this.finishShortPulse(this.shortRotationPulse.ticket(),false);
       if (this.blockESP.getValue() && this.lastPlaced != null) {
          RenderUtil.drawBox(event.getMatrix(), new AABB(this.lastPlaced), new Color(90, 190, 255, 180), 1);
       }

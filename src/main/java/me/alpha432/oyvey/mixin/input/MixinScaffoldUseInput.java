@@ -48,8 +48,8 @@ public class MixinScaffoldUseInput {
       if (key == Util.mc.options.keyUse) {
          if (this.oyvey$blockManualUse()) return false;
          KillauraRecode aura = OyVey.moduleManager == null ? null : OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
-         // Preserve a real raised shield through vanilla's key-release check;
-         // do not forge a use press when no owned shield is actually active.
+         // Preserve an owned shield/Pro sword block through vanilla's release
+         // check; no held input is forged before an actual use action exists.
          if (aura != null && aura.holdsShieldInput()) return true;
       }
       return original.call(key);

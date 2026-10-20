@@ -3,6 +3,7 @@ package me.alpha432.oyvey.mixin.network;
 import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.modules.movement.Scaffold;
 import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
+import me.alpha432.oyvey.features.modules.combat.PvpBot;
 import me.alpha432.oyvey.features.modules.player.VelocityModule;
 import me.alpha432.oyvey.features.modules.misc.KillInsults;
 import me.alpha432.oyvey.event.impl.network.ChatEvent;
@@ -21,6 +22,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPacketListener.class)
 public class MixinClientPacketListener {
+   @Inject(method = "handleSetEntityMotion", at = @At(value = "INVOKE",
+      target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/network/PacketProcessor;)V",
+      shift = At.Shift.AFTER), cancellable = true)
+   private void oyvey$delayKnockback(ClientboundSetEntityMotionPacket packet, CallbackInfo ci) {
+      if (OyVey.moduleManager==null) return;
+      VelocityModule velocity=OyVey.moduleManager.getModuleByClass(VelocityModule.class);
+      if (velocity!=null && velocity.delayMotion(packet,(ClientPacketListener)(Object)this)) ci.cancel();
+   }
+
    @Inject(method = "handleEntityEvent", at = @At("RETURN"))
    private void oyvey$killInsultsDeath(ClientboundEntityEventPacket packet, CallbackInfo ci) {
       if (packet.getEventId() != 3 || OyVey.moduleManager == null || Util.mc.level == null) return;
@@ -33,6 +43,8 @@ public class MixinClientPacketListener {
       if (OyVey.moduleManager == null) return;
       KillauraRecode aura = OyVey.moduleManager.getModuleByClass(KillauraRecode.class);
       if (aura != null) aura.onServerCorrection();
+      PvpBot pvpBot = OyVey.moduleManager.getModuleByClass(PvpBot.class);
+      if (pvpBot != null) pvpBot.onServerCorrection();
       Scaffold scaffold = OyVey.moduleManager.getModuleByClass(Scaffold.class);
       if (scaffold != null) scaffold.onServerCorrection();
       VelocityModule velocity = OyVey.moduleManager.getModuleByClass(VelocityModule.class);

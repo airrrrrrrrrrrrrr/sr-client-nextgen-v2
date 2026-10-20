@@ -10,7 +10,7 @@ import net.minecraft.world.phys.Vec3;
 public final class PolarRotation {
    private final RandomGenerator random;
    private int target = -1, lastTick = Integer.MIN_VALUE, changeIn;
-   private float yawVelocity, pitchVelocity, speed = .5F, speedGoal, response, acceleration;
+   private float yawVelocity, pitchVelocity, speed = .5F, speedGoal, response;
    private double x, y, z, goalX, goalY, goalZ;
 
    public PolarRotation() { this(ThreadLocalRandom.current()); }
@@ -32,7 +32,6 @@ public final class PolarRotation {
          changeIn = 3 + random.nextInt(6);
          speedGoal = random.nextFloat();
          response = .22F + random.nextFloat() * .18F;
-         acceleration = .35F + random.nextFloat() * .25F;
          goalX = (random.nextDouble() * 2 - 1) * .28;
          goalZ = (random.nextDouble() * 2 - 1) * .28;
          goalY = (random.nextDouble() * 2 - 1) * .04;
@@ -51,18 +50,38 @@ public final class PolarRotation {
 
    public SilentRotationMath.Rotation step(float sentYaw, float sentPitch, float targetYaw, float targetPitch,
       float minSpeed, float maxSpeed, int targetId, int tick) {
+      return step(sentYaw,sentPitch,targetYaw,targetPitch,minSpeed,maxSpeed,.85F,.6F,targetId,tick);
+   }
+
+   /** Acceleration and deceleration are independent response fractions per native tick. */
+   public SilentRotationMath.Rotation step(float sentYaw, float sentPitch, float targetYaw, float targetPitch,
+      float minSpeed, float maxSpeed, float acceleration, float deceleration, int targetId, int tick) {
       update(targetId,tick);
-      float lo = Math.max(.1F,Math.min(minSpeed,maxSpeed));
-      float hi = Math.max(lo,Math.max(minSpeed,maxSpeed));
-      float limit = lo + (hi - lo) * speed;
       float dy = Mth.wrapDegrees(targetYaw - sentYaw), dp = Mth.clamp(targetPitch,-90,90) - sentPitch;
-      float desiredYaw = Mth.clamp(dy * response,-limit * 4,limit * 4);
-      float desiredPitch = Mth.clamp(dp * response,-limit * 2,limit * 2);
-      yawVelocity += (desiredYaw - yawVelocity) * acceleration;
-      pitchVelocity += (desiredPitch - pitchVelocity) * acceleration;
+      if (acceleration >= 10.0F) {
+         yawVelocity = pitchVelocity = 0;
+         return new SilentRotationMath.Rotation(sentYaw+dy,Mth.clamp(targetPitch,-90,90));
+      }
+      // Preserve the original 1-100 tuning, then increase acquisition speed
+      // above 100. The GUI's 1000 endpoint is explicitly instantaneous.
+      float boost = Math.max(1.0F,acceleration);
+      float baseLo = Math.max(.1F,Math.min(minSpeed,maxSpeed));
+      float lo = baseLo * boost, hi = Math.max(baseLo,Math.max(minSpeed,maxSpeed)) * boost;
+      float limit = lo + (hi - lo) * speed;
+      float tracking = Math.min(1.0F,response * boost);
+      float desiredYaw = Mth.clamp(dy * tracking,-limit * 4,limit * 4);
+      float desiredPitch = Mth.clamp(dp * tracking,-limit * 2,limit * 2);
+      yawVelocity = approachVelocity(yawVelocity,desiredYaw,acceleration,deceleration);
+      pitchVelocity = approachVelocity(pitchVelocity,desiredPitch,acceleration,deceleration);
       float yawStep = Math.copySign(Math.min(Math.abs(dy),Math.max(0,Math.copySign(1,dy) * yawVelocity)),dy);
       float pitchStep = Math.copySign(Math.min(Math.abs(dp),Math.max(0,Math.copySign(1,dp) * pitchVelocity)),dp);
       return new SilentRotationMath.Rotation(sentYaw + Mth.clamp(yawStep,-hi * 4,hi * 4),
          Mth.clamp(sentPitch + Mth.clamp(pitchStep,-hi * 2,hi * 2),-90,90));
+   }
+
+   private static float approachVelocity(float current, float desired, float acceleration, float deceleration) {
+      boolean braking = current != 0 && (Math.signum(current) != Math.signum(desired) || Math.abs(desired) < Math.abs(current));
+      float response = Mth.clamp(braking ? deceleration : acceleration,.01F,1.0F);
+      return current + (desired - current) * response;
    }
 }

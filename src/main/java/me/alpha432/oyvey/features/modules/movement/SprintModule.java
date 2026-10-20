@@ -4,6 +4,7 @@ import me.alpha432.oyvey.OyVey;
 import me.alpha432.oyvey.features.modules.Module;
 import me.alpha432.oyvey.features.modules.combat.KillauraRecode;
 import me.alpha432.oyvey.features.modules.combat.WTap;
+import me.alpha432.oyvey.features.modules.combat.PvpBot;
 import me.alpha432.oyvey.features.settings.Setting;
 import me.alpha432.oyvey.mixin.render.accessor.LocalPlayerRotationAccessor;
 import net.minecraft.client.player.ClientInput;
@@ -45,6 +46,8 @@ public class SprintModule extends Module {
       boolean grimAura = aura != null && aura.isGrimMovementCorrectionConfigured();
       boolean conservative = grimAura || this.mode.getValue() == Mode.GRIM;
       Input keys = input.keyPresses;
+      PvpBot pvpBot = OyVey.moduleManager.getModuleByClass(PvpBot.class);
+      if (pvpBot != null && pvpBot.suppressesSprint() || aura != null && aura.isProSprintSuppressed()) return false;
       if (aura != null && aura.isCriticalSprintSuppressed()) {
          return false;
       } else if (scaffold != null && scaffold.isSprintSuppressed()) {
